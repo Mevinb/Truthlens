@@ -1,0 +1,67 @@
+# Python Cache & Testing
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+.pytest_cache/
+.coverage
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environments
+.venv/
+venv/
+env/
+venv_truthlens/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Datasets (all variants and extracts)
+dataset/train/
+dataset/val/
+dataset/test/
+dataset_*/
+scratch_demo/
+*.zip
+*.tar
+*.gz
+
+# Model weights & binaries
+models/*.pth
+models/*.pkl
+models/*.h5
+models/*.pt
+models/*.onnx
+!models/.gitkeep
+
+# Results & Logs
+results/metrics/*
+results/plots/*
+results/gradcam/*
+results/logs/*
+!results/.gitkeep
+runs/
+*.log
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Credentials & API Keys
+.env
+*.env
+.kaggle/
+kaggle.json
+
