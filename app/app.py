@@ -602,41 +602,54 @@ def render_result(result: dict, heatmap, img: Image.Image, settings: dict) -> No
 
     # ── Multi-Domain Analysis Tabs ──
     st.markdown("<hr>", unsafe_allow_html=True)
-    tab_gradcam, tab_fft, tab_ela = st.tabs([
+    render_inspectors(img, result, heatmap)
+
+
+# ─── Inspector Tabs ──────────────────────────────────────────────────────────
+def render_inspectors(img: Image.Image, result: dict, heatmap: np.ndarray | None) -> None:
+    tab_cam, tab_fft, tab_ela = st.tabs([
         "🧠 Grad-CAM Heatmap",
         "🔬 2D FFT Spectral Analysis (SDXL Inspector)",
         "📷 Error Level Analysis (ELA)",
     ])
 
-    with tab_gradcam:
+    img_np = np.array(img.convert("RGB"))
+
+    with tab_cam:
+        st.markdown('<div class="section-label">Grad-CAM Heatmap — Where the Network Looked</div>', unsafe_allow_html=True)
         if heatmap is not None:
-            st.markdown('<div class="section-label">Grad-CAM Heatmap — Where the Network Looked</div>', unsafe_allow_html=True)
-            gc1, gc2, gc3 = st.columns([1, 1, 1])
-            with gc1:
+            col1, col2, col3 = st.columns([1, 1, 1], gap="large")
+            with col1:
                 st.markdown("**Original Image**")
                 st.image(img, use_container_width=True)
-            with gc2:
+            with col2:
                 st.markdown("**Grad-CAM Overlay**")
-                st.image(heatmap, use_container_width=True, clamp=True)
-            with gc3:
+                st.image(heatmap, use_container_width=True)
+            with col3:
                 st.markdown("**Interpretation**")
                 st.markdown(
                     """
-                    <div class="info-note">
-                      🔴 <b>Red/Hot</b> regions = areas the model found most suspicious.<br><br>
-                      🔵 <b>Blue/Cool</b> regions = areas that contributed less to the decision.
+                    <div class="glass-card" style="padding:14px; margin-bottom:10px;">
+                      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                        <span style="color:#ef4444; font-size:1.2rem;">●</span>
+                        <span style="color:#f1f5f9; font-size:0.85rem;"><b>Red/Hot regions</b> = areas the model found most suspicious.</span>
+                      </div>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="color:#3b82f6; font-size:1.2rem;">●</span>
+                        <span style="color:#94a3b8; font-size:0.85rem;"><b>Blue/Cool regions</b> = areas that contributed less to the decision.</span>
+                      </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
         else:
-            st.info("Grad-CAM heatmap is enabled when using ResNet18 or Smart Ensemble mode.")
+            st.info("Grad-CAM is available for CNN models only. Select a ResNet18 model to view heatmaps.")
 
     with tab_fft:
         st.markdown('<div class="section-label">2D Fourier Transform (FFT) Frequency Spectrum — VAE Latent Grid Artifact Inspector</div>', unsafe_allow_html=True)
         try:
-            import cv2
-            gray = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2GRAY)
+            from src.predict import compute_fft_spectral_score
+            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY) if len(img_np.shape) == 3 else img_np
             f = np.fft.fft2(gray.astype(np.float32))
             fshift = np.fft.fftshift(f)
             mag = np.log(np.abs(fshift) + 1e-8)
@@ -648,7 +661,7 @@ def render_result(result: dict, heatmap, img: Image.Image, settings: dict) -> No
                 st.markdown("**2D Fourier Magnitude Spectrum (Log Scale)**")
                 st.image(fft_heatmap, use_container_width=True)
             with fcol2:
-                spectral = result.get("spectral_analysis", {})
+                spectral = result.get("spectral_analysis") or compute_fft_spectral_score(img_np)
                 hf_ratio = spectral.get("hf_ratio", 0.0)
                 spectral_score = spectral.get("spectral_ai_score", 0.0)
 
