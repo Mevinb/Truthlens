@@ -149,6 +149,27 @@ python dataset/download_cifake.py --method manual
 python dataset/download_cifake.py --method info
 ```
 
+For a broader corpus spanning real photographs, GANs, latent diffusion, pixel
+diffusion, and newer generators, use the single resumable corpus builder:
+
+```bash
+python dataset/download_corpus.py \
+  --per-architecture 10000 \
+  --highres-per-class 10000 \
+  --output-dir dataset_corpus
+```
+
+The builder streams high-resolution public Hugging Face sources, rejects source
+images smaller than 512px on either edge, and resizes only after that quality gate.
+CIFAKE is excluded by default because its 32x32 images are only useful as a
+legacy low-resolution stress set; add `--cifake-per-class N` if that stress
+test is specifically required. The builder then
+deduplicates by pixel hash, excludes NSFW-flagged rows when the source exposes
+that field, and resumes from `manifest.csv`. It writes `sources.json` with
+source URLs and licenses. Review each upstream dataset card before
+redistribution: licenses and generator labels are source-specific. The output
+can be used with `--data-dir dataset_corpus`.
+
 ### 3. Train Models
 
 ```bash

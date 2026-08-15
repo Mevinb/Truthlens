@@ -28,6 +28,9 @@ venv_truthlens/
 dataset/train/
 dataset/val/
 dataset/test/
+dataset/archive/
+dataset/**/*.jpg
+dataset/**/*.png
 dataset_*/
 scratch_demo/
 *.zip

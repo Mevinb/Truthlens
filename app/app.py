@@ -339,7 +339,10 @@ def _load_predictor(model_type: str):
     """Cache only successfully constructed predictors."""
     from src.utils import Config
     cfg = Config()
-    cfg.cnn_model_name = "resnet18_highres.pth"
+    for candidate in ["resnet18_truthlens.pth", "resnet18_highres.pth"]:
+        if (cfg.models_dir / candidate).exists():
+            cfg.cnn_model_name = candidate
+            break
 
     if "Ensemble" in model_type:
         from src.predict import EnsemblePredictor

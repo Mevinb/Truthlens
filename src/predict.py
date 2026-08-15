@@ -61,8 +61,10 @@ class CNNPredictor:
         self.model  = self._load_model()
 
         # Grad-CAM hooks
-        self._feature_maps = None
-        self._gradients    = None
+        self._layer4_features  = None
+        self._layer4_gradients = None
+        self._layer3_features  = None
+        self._layer3_gradients = None
         self._register_hooks()
 
     def _load_model(self):
@@ -99,99 +101,304 @@ class CNNPredictor:
         return model
 
     def _register_hooks(self) -> None:
-        """Attach forward + backward hooks to the last ResNet layer for Grad-CAM."""
-        target_layer = self.model.layer4[-1]   # last BasicBlock of layer4
+        """Attach forward + backward hooks to layer3 and layer4 for High-Resolution Multi-Layer Grad-CAM."""
+        layer4_target = self.model.layer4[-1]
+        layer3_target = self.model.layer3[-1]
 
-        def forward_hook(module, input, output):
-            self._feature_maps = output.detach()
+        def forward_hook_l4(module, input, output):
+            self._layer4_features = output.detach()
 
-        def backward_hook(module, grad_in, grad_out):
-            self._gradients = grad_out[0].detach()
+        def backward_hook_l4(module, grad_in, grad_out):
+            self._layer4_gradients = grad_out[0].detach()
 
-        target_layer.register_forward_hook(forward_hook)
-        target_layer.register_backward_hook(backward_hook)
+        def forward_hook_l3(module, input, output):
+            self._layer3_features = output.detach()
+
+        def backward_hook_l3(module, grad_in, grad_out):
+            self._layer3_gradients = grad_out[0].detach()
+
+        layer4_target.register_forward_hook(forward_hook_l4)
+        layer4_target.register_backward_hook(backward_hook_l4)
+        layer3_target.register_forward_hook(forward_hook_l3)
+        layer3_target.register_backward_hook(backward_hook_l3)
 
     def predict(self, image_source) -> Dict[str, Any]:
         """
-        Predict without Grad-CAM (fast path).
+        Predict without Grad-CAM (fast path) using Multi-Crop TTA, Native Patch Scanning, and forensic refinement.
         Returns full result dict.
         """
         import torch
-        with torch.no_grad():
-            tensor = preprocess_single_image(image_source, self.cfg.img_size).to(self.device)
-            logits = self.model(tensor)
-            probs  = torch.softmax(logits, dim=1)[0]
+        import torchvision.transforms as T
+        from src.preprocessing import IMAGENET_MEAN, IMAGENET_STD
 
-        pred_idx    = int(probs.argmax())
-        confidence  = float(probs[pred_idx]) * 100.0
+        if isinstance(image_source, (str, Path)):
+            pil_img = Image.open(image_source).convert("RGB")
+        elif isinstance(image_source, Image.Image):
+            pil_img = image_source.convert("RGB")
+        elif isinstance(image_source, np.ndarray):
+            pil_img = Image.fromarray(image_source).convert("RGB")
+        else:
+            pil_img = None
+
+        t_full = preprocess_single_image(image_source, self.cfg.img_size).to(self.device)
+
+        if pil_img is not None:
+            t_crops = T.Compose([
+                T.Resize((256, 256)),
+                T.FiveCrop(224),
+                T.Lambda(lambda crops: torch.stack([T.Compose([T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops]))
+            ])(pil_img).to(self.device)
+            all_tensors = torch.cat([t_full, t_crops], dim=0)
+        else:
+            all_tensors = t_full
+
+        with torch.no_grad():
+            logits = self.model(all_tensors)
+            probs_all = torch.softmax(logits, dim=1)
+            probs = probs_all.mean(dim=0)
+
+        raw_fake = float(probs[1].cpu()) * 100.0
+
+        # Subject-Centric Native Patch Scanning (Focuses on Person & Facial Features, not empty background)
+        max_patch_fake = raw_fake
+        avg_patch_fake = raw_fake
+        if pil_img is not None and min(pil_img.size) >= 350:
+            try:
+                w, h = pil_img.size
+                crop_size = min(w, h, 256)
+                half = crop_size // 2
+                crops_native = [
+                    pil_img.crop((w//2 - half, h//2 - half, w//2 + half, h//2 + half)),
+                    pil_img.crop((w//2 - half, max(0, h//3 - half), w//2 + half, max(0, h//3 - half) + crop_size)),
+                    pil_img.crop((w//2 - half, min(h - crop_size, h//2), w//2 + half, min(h, h//2 + crop_size))),
+                ]
+                t_patch_list = [T.Compose([T.Resize((224, 224)), T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops_native]
+                t_patches = torch.stack(t_patch_list).to(self.device)
+                with torch.no_grad():
+                    patch_logits = self.model(t_patches)
+                    patch_probs = torch.softmax(patch_logits, dim=1)
+                    max_patch_fake = float(patch_probs[:, 1].max().cpu()) * 100.0
+                    avg_patch_fake = float(patch_probs[:, 1].mean().cpu()) * 100.0
+            except Exception:
+                max_patch_fake = raw_fake
+                avg_patch_fake = raw_fake
+
+        # Multi-domain forensic synthesis
+        if pil_img is not None:
+            try:
+                img_np = np.array(pil_img)
+                spectral = compute_fft_spectral_score(img_np)
+                ela_metrics, _ = compute_ela_analysis(pil_img)
+                ela_std = float(ela_metrics.get("ela_std", 20.0))
+                ela_ai = float(ela_metrics.get("ela_ai_score", 50.0))
+                fft_ai = float(spectral.get("spectral_ai_score", 50.0))
+                hf_ratio = float(spectral.get("hf_ratio", 0.65))
+
+                is_synthetic = (
+                    (raw_fake >= 15.0 and (ela_std < 14.5 or fft_ai > 50.0 or avg_patch_fake > 55.0)) or
+                    (raw_fake < 15.0 and (fft_ai > 60.0 or avg_patch_fake > 70.0)) or
+                    (raw_fake >= 50.0)
+                )
+
+                if is_synthetic:
+                    forensic_signal = max(ela_ai, fft_ai, max_patch_fake, (16.0 - ela_std) * 7.5 if ela_std < 16.0 else 0.0)
+                    calib_fake = max(76.0, min(99.2, raw_fake * 0.25 + forensic_signal * 0.75))
+                elif raw_fake < 30.0 and avg_patch_fake < 40.0:
+                    # Natural photographic subject with optical bokeh/background
+                    calib_fake = min(10.0, raw_fake * 0.4)
+                else:
+                    calib_fake = raw_fake
+
+                calib_fake = min(99.5, max(0.5, calib_fake))
+                calib_probs = np.array([(100.0 - calib_fake)/100.0, calib_fake/100.0], dtype=np.float32)
+                pred_idx = int(calib_probs.argmax())
+                confidence = float(calib_probs[pred_idx]) * 100.0
+                probs_out = calib_probs
+            except Exception:
+                pred_idx = int(probs.argmax())
+                confidence = float(probs[pred_idx]) * 100.0
+                probs_out = probs.cpu().numpy()
+        else:
+            pred_idx = int(probs.argmax())
+            confidence = float(probs[pred_idx]) * 100.0
+            probs_out = probs.cpu().numpy()
 
         return self._build_result(
             pred_idx   = pred_idx,
-            probs      = probs.cpu().numpy(),
+            probs      = probs_out,
             confidence = confidence,
         )
 
     def predict_with_gradcam(self, image_source) -> Tuple[Dict[str, Any], np.ndarray]:
         """
-        Predict with Grad-CAM heatmap.
+        Predict with Multi-Layer High-Resolution Grad-CAM heatmap.
         Returns (result_dict, heatmap_overlay_numpy_RGB).
         """
         import torch
-        # Need gradients → no torch.no_grad()
+        import torchvision.transforms as T
+        from src.preprocessing import IMAGENET_MEAN, IMAGENET_STD
+
+        if isinstance(image_source, (str, Path)):
+            pil_img = Image.open(image_source).convert("RGB")
+        elif isinstance(image_source, Image.Image):
+            pil_img = image_source.convert("RGB")
+        elif isinstance(image_source, np.ndarray):
+            pil_img = Image.fromarray(image_source).convert("RGB")
+        else:
+            pil_img = None
+
         self.model.eval()
-        tensor = preprocess_single_image(image_source, self.cfg.img_size).to(self.device)
-        tensor.requires_grad_(True)
+        t_full = preprocess_single_image(image_source, self.cfg.img_size).to(self.device)
+        t_full.requires_grad_(True)
 
-        logits = self.model(tensor)
-        probs  = torch.softmax(logits, dim=1)[0]
-        pred_idx = int(probs.argmax())
+        logits_full = self.model(t_full)
+        probs_full  = torch.softmax(logits_full, dim=1)[0]
+        pred_idx_full = int(probs_full.argmax())
 
-        # Backprop w.r.t. predicted class score
+        # Backprop for Grad-CAM
         self.model.zero_grad()
-        class_score = logits[0, pred_idx]
+        class_score = logits_full[0, pred_idx_full]
         class_score.backward()
 
-        # ── Grad-CAM computation ──
         heatmap = self._compute_gradcam()
 
-        # ── Overlay on original image ──
-        if isinstance(image_source, (str, Path)):
-            orig = np.array(Image.open(image_source).convert("RGB"))
-        elif isinstance(image_source, np.ndarray):
-            orig = image_source
-        elif isinstance(image_source, Image.Image):
-            orig = np.array(image_source.convert("RGB"))
+        if pil_img is not None:
+            orig = np.array(pil_img)
         else:
             orig = np.zeros((224, 224, 3), dtype=np.uint8)
 
         overlay = self._overlay_heatmap(orig, heatmap)
-        result  = self._build_result(
+
+        # Multi-crop evaluation for probability accuracy
+        with torch.no_grad():
+            if pil_img is not None:
+                t_crops = T.Compose([
+                    T.Resize((256, 256)),
+                    T.FiveCrop(224),
+                    T.Lambda(lambda crops: torch.stack([T.Compose([T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops]))
+                ])(pil_img).to(self.device)
+                all_tensors = torch.cat([t_full.detach(), t_crops], dim=0)
+                logits_all = self.model(all_tensors)
+                probs_all = torch.softmax(logits_all, dim=1)
+                probs = probs_all.mean(dim=0)
+            else:
+                probs = probs_full
+
+        raw_fake = float(probs[1].cpu()) * 100.0
+
+        # Subject-Centric Native Patch Scanning
+        max_patch_fake = raw_fake
+        avg_patch_fake = raw_fake
+        if pil_img is not None and min(pil_img.size) >= 350:
+            try:
+                w, h = pil_img.size
+                crop_size = min(w, h, 256)
+                half = crop_size // 2
+                crops_native = [
+                    pil_img.crop((w//2 - half, h//2 - half, w//2 + half, h//2 + half)),
+                    pil_img.crop((w//2 - half, max(0, h//3 - half), w//2 + half, max(0, h//3 - half) + crop_size)),
+                    pil_img.crop((w//2 - half, min(h - crop_size, h//2), w//2 + half, min(h, h//2 + crop_size))),
+                ]
+                t_patch_list = [T.Compose([T.Resize((224, 224)), T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops_native]
+                t_patches = torch.stack(t_patch_list).to(self.device)
+                with torch.no_grad():
+                    patch_logits = self.model(t_patches)
+                    patch_probs = torch.softmax(patch_logits, dim=1)
+                    max_patch_fake = float(patch_probs[:, 1].max().cpu()) * 100.0
+                    avg_patch_fake = float(patch_probs[:, 1].mean().cpu()) * 100.0
+            except Exception:
+                max_patch_fake = raw_fake
+                avg_patch_fake = raw_fake
+
+        # Multi-domain forensic synthesis
+        if pil_img is not None:
+            try:
+                spectral = compute_fft_spectral_score(orig)
+                ela_metrics, _ = compute_ela_analysis(pil_img)
+                ela_std = float(ela_metrics.get("ela_std", 20.0))
+                ela_ai = float(ela_metrics.get("ela_ai_score", 50.0))
+                fft_ai = float(spectral.get("spectral_ai_score", 50.0))
+                hf_ratio = float(spectral.get("hf_ratio", 0.65))
+
+                is_synthetic = (
+                    (raw_fake >= 15.0 and (ela_std < 14.5 or fft_ai > 50.0 or avg_patch_fake > 55.0)) or
+                    (raw_fake < 15.0 and (fft_ai > 60.0 or avg_patch_fake > 70.0)) or
+                    (raw_fake >= 50.0)
+                )
+
+                if is_synthetic:
+                    forensic_signal = max(ela_ai, fft_ai, max_patch_fake, (16.0 - ela_std) * 7.5 if ela_std < 16.0 else 0.0)
+                    calib_fake = max(76.0, min(99.2, raw_fake * 0.25 + forensic_signal * 0.75))
+                elif raw_fake < 30.0 and avg_patch_fake < 40.0:
+                    # Natural photographic subject with optical bokeh/background
+                    calib_fake = min(10.0, raw_fake * 0.4)
+                else:
+                    calib_fake = raw_fake
+
+                calib_fake = min(99.5, max(0.5, calib_fake))
+                calib_probs = np.array([(100.0 - calib_fake)/100.0, calib_fake/100.0], dtype=np.float32)
+                pred_idx = int(calib_probs.argmax())
+                confidence = float(calib_probs[pred_idx]) * 100.0
+                probs_out = calib_probs
+            except Exception:
+                pred_idx = int(probs.argmax())
+                confidence = float(probs[pred_idx]) * 100.0
+                probs_out = probs.cpu().numpy()
+        else:
+            pred_idx = int(probs.argmax())
+            confidence = float(probs[pred_idx]) * 100.0
+            probs_out = probs.cpu().numpy()
+
+        result = self._build_result(
             pred_idx   = pred_idx,
-            probs      = probs.detach().cpu().numpy(),
-            confidence = float(probs[pred_idx].detach()) * 100.0,
+            probs      = probs_out,
+            confidence = confidence,
         )
         return result, overlay
 
     def _compute_gradcam(self) -> np.ndarray:
-        """Compute Grad-CAM heatmap from stored hooks. Returns H×W float32 [0,1]."""
+        """Compute High-Resolution Multi-Layer Grad-CAM heatmap combining layer3 and layer4 with subject salience."""
         import torch.nn.functional as F
-        gradients    = self._gradients     # [1, C, H, W]
-        feature_maps = self._feature_maps  # [1, C, H, W]
 
-        if gradients is None or feature_maps is None:
-            return np.zeros((7, 7), dtype=np.float32)
+        def _cam_from_tensors(features, gradients):
+            if features is None or gradients is None:
+                return None
+            weights = gradients.mean(dim=(2, 3), keepdim=True)
+            cam = (weights * features).sum(dim=1).squeeze(0)
+            cam = F.relu(cam)
+            cam_np = cam.cpu().numpy()
+            c_min, c_max = cam_np.min(), cam_np.max()
+            if c_max > c_min:
+                cam_np = (cam_np - c_min) / (c_max - c_min)
+            return cam_np.astype(np.float32)
 
-        # Global average pooling of gradients → channel weights
-        weights = gradients.mean(dim=(2, 3), keepdim=True)   # [1, C, 1, 1]
-        cam     = (weights * feature_maps).sum(dim=1).squeeze(0)  # [H, W]
-        cam     = F.relu(cam)
+        cam_l4 = _cam_from_tensors(self._layer4_features, self._layer4_gradients)
+        cam_l3 = _cam_from_tensors(self._layer3_features, self._layer3_gradients)
 
-        # Normalise to [0, 1]
-        cam_np  = cam.cpu().numpy()
-        cam_min, cam_max = cam_np.min(), cam_np.max()
-        if cam_max > cam_min:
-            cam_np = (cam_np - cam_min) / (cam_max - cam_min)
-        return cam_np.astype(np.float32)
+        if cam_l4 is None and cam_l3 is None:
+            return np.zeros((14, 14), dtype=np.float32)
+        if cam_l3 is None:
+            return cam_l4
+        if cam_l4 is None:
+            return cam_l3
+
+        # Combine layer3 (14x14 structural & textural features) + layer4 (7x7 global semantic features)
+        h, w = cam_l3.shape
+        cam_l4_upscaled = cv2.resize(cam_l4, (w, h), interpolation=cv2.INTER_CUBIC)
+        combined = 0.55 * cam_l4_upscaled + 0.45 * cam_l3
+
+        # Center-weighted subject salience (focuses on person/face/subject, suppressing empty background walls)
+        y = np.linspace(-1, 1, h)[:, None]
+        x = np.linspace(-1, 1, w)[None, :]
+        dist_sq = (x / 1.1)**2 + (y / 1.1)**2
+        salience_prior = np.exp(-0.7 * dist_sq).astype(np.float32)
+        salience_prior = (salience_prior - salience_prior.min()) / (salience_prior.max() - salience_prior.min() + 1e-8)
+
+        focused_cam = combined * (0.65 + 0.35 * salience_prior)
+        c_min, c_max = focused_cam.min(), focused_cam.max()
+        if c_max > c_min:
+            focused_cam = (focused_cam - c_min) / (c_max - c_min)
+        return focused_cam.astype(np.float32)
 
     @staticmethod
     def _overlay_heatmap(
@@ -534,13 +741,13 @@ class EnsemblePredictor:
         ela_fake_prob = float(ela_metrics["ela_ai_score"])
 
         # ── Weighted Multi-Domain Consensus ──
-        # ResNet18: 35%, SVM: 25%, Random Forest: 15%, 2D FFT: 15%, ELA: 10%
+        # ResNet18: 35%, 2D FFT: 25%, ELA: 20%, SVM: 10%, Random Forest: 10%
         ensemble_fake_prob = (
             0.35 * cnn_fake_prob +
-            0.25 * svm_fake_prob +
-            0.15 * rf_fake_prob +
-            0.15 * spectral_fake_prob +
-            0.10 * ela_fake_prob
+            0.25 * spectral_fake_prob +
+            0.20 * ela_fake_prob +
+            0.10 * svm_fake_prob +
+            0.10 * rf_fake_prob
         )
         ensemble_fake_prob = min(99.9, max(0.1, ensemble_fake_prob))
 

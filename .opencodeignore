@@ -1,0 +1,56 @@
+# .opencodeignore - Prevents opencode from snapshotting large/binary files
+# This stops git from trying to index hundreds of thousands of dataset images
+# which was causing 100% CPU usage on opencode's snapshot worker.
+
+# ── Dataset images (the main offender: ~350k files, 3.7 GB) ──────────────────
+dataset/
+dataset_*/
+dataset_architectures/
+
+# ── ML model weights & binaries ──────────────────────────────────────────────
+models/
+*.pth
+*.pkl
+*.h5
+*.pt
+*.onnx
+*.bin
+*.safetensors
+
+# ── Results & run artifacts ───────────────────────────────────────────────────
+results/
+runs/
+*.log
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+venv_truthlens/
+
+# ── Archives & compressed files ───────────────────────────────────────────────
+*.zip
+*.tar
+*.gz
+*.tar.gz
+*.tgz
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# ── IDE & OS noise ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
