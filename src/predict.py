@@ -194,20 +194,22 @@ class CNNPredictor:
                 fft_ai = float(spectral.get("spectral_ai_score", 50.0))
                 hf_ratio = float(spectral.get("hf_ratio", 0.65))
 
+                is_authentic_camera = (ela_std >= 18.0 and fft_ai <= 40.0)
                 is_synthetic = (
-                    (raw_fake >= 15.0 and (ela_std < 14.5 or fft_ai > 50.0 or avg_patch_fake > 55.0)) or
-                    (raw_fake < 15.0 and (fft_ai > 60.0 or avg_patch_fake > 70.0)) or
-                    (raw_fake >= 50.0)
+                    (ela_std < 14.0 and ela_ai > 50.0) or
+                    (fft_ai > 55.0) or
+                    (avg_patch_fake > 65.0) or
+                    (raw_fake >= 60.0 and not is_authentic_camera)
                 )
 
-                if is_synthetic:
+                if is_authentic_camera and not (fft_ai > 60.0 or avg_patch_fake > 75.0):
+                    # Camera sensor shot noise + natural optical frequency falloff
+                    calib_fake = min(12.0, max(2.0, raw_fake * 0.2 + (fft_ai + ela_ai) * 0.15))
+                elif is_synthetic:
                     forensic_signal = max(ela_ai, fft_ai, max_patch_fake, (16.0 - ela_std) * 7.5 if ela_std < 16.0 else 0.0)
                     calib_fake = max(76.0, min(99.2, raw_fake * 0.25 + forensic_signal * 0.75))
-                elif raw_fake < 30.0 and avg_patch_fake < 40.0:
-                    # Natural photographic subject with optical bokeh/background
-                    calib_fake = min(10.0, raw_fake * 0.4)
                 else:
-                    calib_fake = raw_fake
+                    calib_fake = raw_fake * 0.5 + ((ela_ai + fft_ai) / 2.0) * 0.5
 
                 calib_fake = min(99.5, max(0.5, calib_fake))
                 calib_probs = np.array([(100.0 - calib_fake)/100.0, calib_fake/100.0], dtype=np.float32)
@@ -320,20 +322,22 @@ class CNNPredictor:
                 fft_ai = float(spectral.get("spectral_ai_score", 50.0))
                 hf_ratio = float(spectral.get("hf_ratio", 0.65))
 
+                is_authentic_camera = (ela_std >= 18.0 and fft_ai <= 40.0)
                 is_synthetic = (
-                    (raw_fake >= 15.0 and (ela_std < 14.5 or fft_ai > 50.0 or avg_patch_fake > 55.0)) or
-                    (raw_fake < 15.0 and (fft_ai > 60.0 or avg_patch_fake > 70.0)) or
-                    (raw_fake >= 50.0)
+                    (ela_std < 14.0 and ela_ai > 50.0) or
+                    (fft_ai > 55.0) or
+                    (avg_patch_fake > 65.0) or
+                    (raw_fake >= 60.0 and not is_authentic_camera)
                 )
 
-                if is_synthetic:
+                if is_authentic_camera and not (fft_ai > 60.0 or avg_patch_fake > 75.0):
+                    # Camera sensor shot noise + natural optical frequency falloff
+                    calib_fake = min(12.0, max(2.0, raw_fake * 0.2 + (fft_ai + ela_ai) * 0.15))
+                elif is_synthetic:
                     forensic_signal = max(ela_ai, fft_ai, max_patch_fake, (16.0 - ela_std) * 7.5 if ela_std < 16.0 else 0.0)
                     calib_fake = max(76.0, min(99.2, raw_fake * 0.25 + forensic_signal * 0.75))
-                elif raw_fake < 30.0 and avg_patch_fake < 40.0:
-                    # Natural photographic subject with optical bokeh/background
-                    calib_fake = min(10.0, raw_fake * 0.4)
                 else:
-                    calib_fake = raw_fake
+                    calib_fake = raw_fake * 0.5 + ((ela_ai + fft_ai) / 2.0) * 0.5
 
                 calib_fake = min(99.5, max(0.5, calib_fake))
                 calib_probs = np.array([(100.0 - calib_fake)/100.0, calib_fake/100.0], dtype=np.float32)
