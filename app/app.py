@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import cv2
 import streamlit as st
 from PIL import Image
 
