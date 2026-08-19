@@ -117,6 +117,32 @@ class TestGradCAM:
         assert result["prediction"]  == "REAL"
         assert result["label_index"] == 0
 
+    def test_clip_threshold_adjustment_maps_threshold_to_half(self):
+        from src.predict import ClipPredictor
+
+        adjusted = ClipPredictor._threshold_adjusted_probability(0.4, 0.4)
+
+        assert adjusted == pytest.approx(0.5)
+
+    def test_clip_threshold_adjustment_preserves_decision_order(self):
+        from src.predict import ClipPredictor
+
+        assert ClipPredictor._threshold_adjusted_probability(0.7, 0.4) > 0.5
+        assert ClipPredictor._threshold_adjusted_probability(0.2, 0.4) < 0.5
+
+    def test_clip_routes_boundary_scores_to_review(self):
+        from src.predict import ClipPredictor
+
+        assert ClipPredictor._review_recommended(0.50, 0.01)
+        assert not ClipPredictor._review_recommended(0.95, 0.01)
+        assert not ClipPredictor._review_recommended(0.03, 0.01)
+        assert ClipPredictor._review_recommended(0.08, 0.01)
+
+    def test_clip_routes_view_disagreement_to_review(self):
+        from src.predict import ClipPredictor
+
+        assert ClipPredictor._review_recommended(0.95, 0.30)
+
     def test_classical_probability_uses_estimator_class_order(self, monkeypatch, pil_image):
         from src.predict import ClassicalPredictor
 

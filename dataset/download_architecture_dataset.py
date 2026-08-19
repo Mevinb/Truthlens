@@ -186,7 +186,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stream balanced real, GAN, latent diffusion, pixel diffusion, and other images."
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("dataset_architectures"))
+    parser.add_argument("--output-dir", type=Path, default=Path("datasets/prepared/architectures"))
     parser.add_argument("--per-architecture", type=int, default=20_000)
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--quality", type=int, default=85)

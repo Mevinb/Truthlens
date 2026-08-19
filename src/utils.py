@@ -27,10 +27,19 @@ from sklearn.metrics import (
 )
 
 # ─── Root Paths ───────────────────────────────────────────────────────────────
-ROOT_DIR    = Path(__file__).parent.parent
-DATA_DIR    = ROOT_DIR / "dataset"
-MODELS_DIR  = ROOT_DIR / "models"
-RESULTS_DIR = ROOT_DIR / "results"
+ROOT_DIR     = Path(__file__).parent.parent
+DATASETS_DIR = ROOT_DIR / "datasets"
+
+# Default training corpus.
+#
+# Historically this repo stored CIFAKE directly under ``dataset/``. Datasets are
+# now organised under ``datasets/`` so the ``dataset/`` directory can hold
+# builder/downloader scripts without mixing code and hundreds of thousands of
+# images.
+DATA_DIR     = DATASETS_DIR / "prepared" / "cifake"
+
+MODELS_DIR   = ROOT_DIR / "models"
+RESULTS_DIR  = ROOT_DIR / "results"
 
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 (RESULTS_DIR / "metrics").mkdir(parents=True, exist_ok=True)
@@ -43,6 +52,13 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 class Config:
     # Dataset
     data_dir:    Path = field(default_factory=lambda: DATA_DIR)
+    # Further corpus roots merged into every split alongside data_dir. Held as
+    # strings so to_json/from_json stay symmetric without special-casing a
+    # variable-length list of Paths.
+    extra_data_dirs: Tuple[str, ...] = ()
+    # Select the shortcut-breaking train pipeline in get_transforms. Off by
+    # default so checkpoints trained before it existed remain reproducible.
+    modern_augment: bool = False
     img_size:    int  = 224          # ResNet input size
     cifake_size: int  = 32           # CIFAKE native size
     num_classes: int  = 2
@@ -89,7 +105,75 @@ class Config:
         d["models_dir"]  = Path(d["models_dir"])
         d["results_dir"] = Path(d["results_dir"])
         d["class_names"] = tuple(d["class_names"])
+        if "extra_data_dirs" in d:
+            d["extra_data_dirs"] = tuple(d["extra_data_dirs"])
         return cls(**d)
+
+
+# ─── CNN checkpoint discovery ─────────────────────────────────────────────────
+# Preference order for the ResNet18 checkpoint. First match on disk wins.
+#
+# resnet18_modern.pth leads because it is the only checkpoint trained on the
+# modern-generator corpus. The two behind it were trained when the fake class
+# stopped at the diffusion era — no GPT-Image, no native-multimodal output at
+# all — and on the held-out modern test split they score gpt-image-2 at 48.5%
+# recall with a mean P(FAKE) of 49.6%: a coin flip on the exact images users are
+# most likely to bring.
+CNN_CHECKPOINTS = (
+    "resnet18_modern.pth",
+    "resnet18_truthlens.pth",
+    "resnet18_highres.pth",     # symlink to resnet18_truthlens.pth
+)
+
+
+def resolve_cnn_checkpoint(cfg: "Config") -> "Config":
+    """Point ``cfg.cnn_model_name`` at the best checkpoint present on disk.
+
+    Lives here, and not in each caller, because it was previously copy-pasted
+    into the app and two diagnostics. A retrain writes a new filename, so every
+    copy that was not updated together would keep loading the previous weights
+    and report that nothing had changed — the one failure mode that looks
+    exactly like a fix that did not work. Mutates and returns ``cfg`` so it
+    composes in a single expression.
+    """
+    for candidate in CNN_CHECKPOINTS:
+        if (cfg.models_dir / candidate).exists():
+            cfg.cnn_model_name = candidate
+            break
+    return cfg
+
+
+def set_cnn_checkpoint(cfg: "Config", value: str) -> "Config":
+    """Point ``cfg`` at an explicitly requested checkpoint, however it was spelled.
+
+    Callers pass ``--checkpoint`` straight through from a command line, where
+    ``resnet18_modern.pth``, ``models/resnet18_modern.pth`` and an absolute path
+    are all things a person reasonably types. Every consumer then joins
+    ``models_dir / cnn_model_name``, so a value that already carries its
+    directory becomes ``models/models/resnet18_modern.pth``. That path does not
+    exist, but nothing checks until a loader is asked for it — in ``diag_eval_all``
+    it surfaced as ``nothing scored``, which reads as an empty dataset rather
+    than a mistyped flag. Normalise once, here, and fail loudly if the file is
+    genuinely absent.
+    """
+    p = Path(value).expanduser()
+    candidates = [p] if p.is_absolute() else [
+        cfg.models_dir / p,          # bare filename — the documented form
+        ROOT_DIR / p,                # repo-relative, e.g. models/foo.pth
+        cfg.models_dir / p.name,     # any other spelling, by basename
+    ]
+    for cand in candidates:
+        if cand.exists():
+            if cand.parent != cfg.models_dir:
+                cfg.models_dir = cand.parent
+            cfg.cnn_model_name = cand.name
+            return cfg
+    tried = "\n  ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        f"Checkpoint {value!r} not found. Tried:\n  {tried}\n"
+        f"Available in {cfg.models_dir}: "
+        + ", ".join(sorted(f.name for f in cfg.models_dir.glob("*.pth")) or ["(none)"])
+    )
 
 
 # ─── Logger ───────────────────────────────────────────────────────────────────

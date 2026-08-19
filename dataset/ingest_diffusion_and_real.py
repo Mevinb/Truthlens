@@ -3,8 +3,8 @@
 TruthLens — Ingest Authentic 1024px DALL-E 3 & High-Res Real Photos
 ===================================================================
 Streams:
-  - 2,500 DALL-E 3 synthetic images into dataset_multires/*/fake
-  - 2,500 authentic high-resolution real camera photos into dataset_multires/*/real
+  - 2,500 DALL-E 3 synthetic images into datasets/prepared/multires/*/fake
+  - 2,500 authentic high-resolution real camera photos into datasets/prepared/multires/*/real
 """
 
 import sys
@@ -15,7 +15,7 @@ from tqdm import tqdm
 from PIL import Image
 
 ROOT_DIR = Path(__file__).parent.parent
-OUTPUT_DIR = ROOT_DIR / "dataset_multires"
+OUTPUT_DIR = ROOT_DIR / "datasets" / "prepared" / "multires"
 
 def main(n_images_per_class: int = 2500):
     print("=" * 70)

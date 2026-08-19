@@ -49,6 +49,55 @@ EMOJI_MAP  = {0: "✅",   1: "🤖"}
 COLOR_MAP  = {0: (34, 197, 94), 1: (239, 68, 68)}   # green / red  (RGB)
 
 
+# ─── Shared Input Handling ────────────────────────────────────────────────────
+def _as_pil(image_source) -> Optional[Image.Image]:
+    """Coerce a path / PIL image / numpy array to RGB PIL. None if unsupported."""
+    if isinstance(image_source, (str, Path)):
+        return Image.open(image_source).convert("RGB")
+    if isinstance(image_source, (bytes, bytearray, memoryview)):
+        return Image.open(io.BytesIO(bytes(image_source))).convert("RGB")
+    if hasattr(image_source, "read"):
+        try:
+            return Image.open(image_source).convert("RGB")
+        except Exception:
+            return None
+    if isinstance(image_source, Image.Image):
+        return image_source.convert("RGB")
+    if isinstance(image_source, np.ndarray):
+        return Image.fromarray(image_source).convert("RGB")
+    return None
+
+
+def _as_numpy(image_source) -> np.ndarray:
+    """Coerce any supported input to an RGB numpy array, falling back to black."""
+    pil = _as_pil(image_source)
+    if pil is None:
+        return np.zeros((224, 224, 3), dtype=np.uint8)
+    return np.array(pil)
+
+
+def forensic_metrics(image_source) -> Dict[str, Any]:
+    """
+    Compute FFT + ELA metrics for *display only*.
+
+    These are shown in the app's inspector tabs because the spectrum and error
+    map are informative to look at, but they are deliberately excluded from the
+    verdict. Measured on the held-out test split their discriminative power is
+    close to chance (FFT AUC 0.562, ELA AUC 0.514, chance = 0.500), and mixing
+    them into the CNN score lowers AUC monotonically: 0.9814 alone, 0.9782 at
+    10% forensic weight, 0.9730 at 25%, 0.9640 at 45%. See diag_forensics.py.
+    """
+    pil = _as_pil(image_source)
+    if pil is None:
+        return {}
+    out: Dict[str, Any] = {"spectral_analysis": compute_fft_spectral_score(np.array(pil))}
+    try:
+        out["ela_metrics"] = compute_ela_analysis(pil)[0]
+    except Exception as exc:                       # ELA needs a JPEG round-trip
+        logger.debug(f"  ELA metrics unavailable: {exc}")
+    return out
+
+
 # ─── CNN Predictor ────────────────────────────────────────────────────────────
 class CNNPredictor:
     """Wraps a trained ResNet18 for single-image inference + Grad-CAM."""
@@ -58,6 +107,9 @@ class CNNPredictor:
         import torch.nn as nn
         self.cfg    = cfg
         self.device = get_device()
+        # Provenance of the loaded weights, filled in by _load_model(). The app
+        # surfaces this so a stale checkpoint is visible rather than implied.
+        self.checkpoint_meta: Dict[str, Any] = {}
         self.model  = self._load_model()
 
         # Grad-CAM hooks
@@ -97,11 +149,24 @@ class CNNPredictor:
             )
         model.load_state_dict(checkpoint["model_state"])
         model.eval()
+        self.checkpoint_meta = {
+            "file":     self.cfg.cnn_model_name,
+            "epoch":    checkpoint.get("epoch"),
+            "val_acc":  checkpoint.get("val_acc"),
+            "val_loss": checkpoint.get("val_loss"),
+            "device":   str(self.device),
+            "classes":  list(class_names or self.cfg.class_names),
+        }
         logger.info(f"  CNN loaded — epoch {checkpoint.get('epoch','?')}")
         return model
 
     def _register_hooks(self) -> None:
-        """Attach forward + backward hooks to layer3 and layer4 for High-Resolution Multi-Layer Grad-CAM."""
+        """Attach forward + backward hooks to layer3 and layer4 for High-Resolution Multi-Layer Grad-CAM.
+
+        Uses register_full_backward_hook: the legacy register_backward_hook silently
+        drops part of grad_input when the module's forward contains multiple autograd
+        nodes (which a ResNet BasicBlock does, because of the residual add).
+        """
         layer4_target = self.model.layer4[-1]
         layer3_target = self.model.layer3[-1]
 
@@ -118,246 +183,149 @@ class CNNPredictor:
             self._layer3_gradients = grad_out[0].detach()
 
         layer4_target.register_forward_hook(forward_hook_l4)
-        layer4_target.register_backward_hook(backward_hook_l4)
+        layer4_target.register_full_backward_hook(backward_hook_l4)
         layer3_target.register_forward_hook(forward_hook_l3)
-        layer3_target.register_backward_hook(backward_hook_l3)
+        layer3_target.register_full_backward_hook(backward_hook_l3)
 
-    def predict(self, image_source) -> Dict[str, Any]:
+    def tta_probs(self, image_source, pil_img=None) -> np.ndarray:
         """
-        Predict without Grad-CAM (fast path) using Multi-Crop TTA, Native Patch Scanning, and forensic refinement.
-        Returns full result dict.
+        Average softmax probabilities over the test-time augmentation views.
+
+        Whole-frame views: plain 224 resize, horizontal flip, and five 224 crops
+        of a 256 resize. That set was selected on the validation split (AUC
+        0.9819 vs 0.9798 single-view) and confirmed on held-out test (AUC 0.9814,
+        93.0% accuracy). See diag_strategy.py.
+
+        Native-scale views: for any image whose short side comfortably exceeds
+        224, a grid of 224 crops taken at 1:1 pixel scale is appended. Those
+        views exist because the whole-frame ones cannot see the evidence on a
+        large image — resizing 1024x1536 to 224 averages ~7x7 source pixels and
+        erases the high-frequency band that separates a neural decoder from a
+        camera sensor. This mirrors NativeScaleCrop in the training pipeline; a
+        model trained on native crops but served only downscaled frames would be
+        evaluated on a distribution it never saw.
+
+        Small images are unaffected: a 32px CIFAKE thumbnail has no native scale
+        to sample, so the view set stays exactly as it was and older checkpoints
+        keep their measured behaviour.
+
+        Public because src/evaluate.py measures this path rather than the bare
+        model — metrics must describe what the app actually serves.
         """
         import torch
         import torchvision.transforms as T
         from src.preprocessing import IMAGENET_MEAN, IMAGENET_STD
 
-        if isinstance(image_source, (str, Path)):
-            pil_img = Image.open(image_source).convert("RGB")
-        elif isinstance(image_source, Image.Image):
-            pil_img = image_source.convert("RGB")
-        elif isinstance(image_source, np.ndarray):
-            pil_img = Image.fromarray(image_source).convert("RGB")
-        else:
-            pil_img = None
+        if pil_img is None:
+            pil_img = _as_pil(image_source)
 
-        t_full = preprocess_single_image(image_source, self.cfg.img_size).to(self.device)
+        views = [preprocess_single_image(image_source, self.cfg.img_size)]
 
         if pil_img is not None:
-            t_crops = T.Compose([
-                T.Resize((256, 256)),
-                T.FiveCrop(224),
-                T.Lambda(lambda crops: torch.stack([T.Compose([T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops]))
-            ])(pil_img).to(self.device)
-            all_tensors = torch.cat([t_full, t_crops], dim=0)
-        else:
-            all_tensors = t_full
-
-        with torch.no_grad():
-            logits = self.model(all_tensors)
-            probs_all = torch.softmax(logits, dim=1)
-            probs = probs_all.mean(dim=0)
-
-        raw_fake = float(probs[1].cpu()) * 100.0
-
-        # Subject-Centric Native Patch Scanning (Focuses on Person & Facial Features, not empty background)
-        max_patch_fake = raw_fake
-        avg_patch_fake = raw_fake
-        if pil_img is not None and min(pil_img.size) >= 350:
-            try:
-                w, h = pil_img.size
-                crop_size = min(w, h, 256)
-                half = crop_size // 2
-                crops_native = [
-                    pil_img.crop((w//2 - half, h//2 - half, w//2 + half, h//2 + half)),
-                    pil_img.crop((w//2 - half, max(0, h//3 - half), w//2 + half, max(0, h//3 - half) + crop_size)),
-                    pil_img.crop((w//2 - half, min(h - crop_size, h//2), w//2 + half, min(h, h//2 + crop_size))),
-                ]
-                t_patch_list = [T.Compose([T.Resize((224, 224)), T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops_native]
-                t_patches = torch.stack(t_patch_list).to(self.device)
-                with torch.no_grad():
-                    patch_logits = self.model(t_patches)
-                    patch_probs = torch.softmax(patch_logits, dim=1)
-                    max_patch_fake = float(patch_probs[:, 1].max().cpu()) * 100.0
-                    avg_patch_fake = float(patch_probs[:, 1].mean().cpu()) * 100.0
-            except Exception:
-                max_patch_fake = raw_fake
-                avg_patch_fake = raw_fake
-
-        # Multi-domain forensic synthesis
-        if pil_img is not None:
-            try:
-                img_np = np.array(pil_img)
-                spectral = compute_fft_spectral_score(img_np)
-                ela_metrics, _ = compute_ela_analysis(pil_img)
-                ela_std = float(ela_metrics.get("ela_std", 20.0))
-                ela_ai = float(ela_metrics.get("ela_ai_score", 50.0))
-                fft_ai = float(spectral.get("spectral_ai_score", 50.0))
-                hf_ratio = float(spectral.get("hf_ratio", 0.65))
-
-                is_authentic_camera = (ela_std >= 18.0 and fft_ai <= 40.0)
-                is_synthetic = (
-                    (ela_std < 14.0 and ela_ai > 50.0) or
-                    (fft_ai > 55.0) or
-                    (avg_patch_fake > 65.0) or
-                    (raw_fake >= 60.0 and not is_authentic_camera)
+            views.append(
+                preprocess_single_image(
+                    pil_img.transpose(Image.FLIP_LEFT_RIGHT), self.cfg.img_size
                 )
+            )
+            norm = T.Compose([T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])
+            views.append(
+                T.Compose([
+                    T.Resize((256, 256)),
+                    T.FiveCrop(self.cfg.img_size),
+                    T.Lambda(lambda crops: torch.stack([norm(c) for c in crops])),
+                ])(pil_img)
+            )
+            native = self._native_crops(pil_img)
+            if native:
+                views.append(torch.stack([norm(c) for c in native]))
 
-                if is_authentic_camera and not (fft_ai > 60.0 or avg_patch_fake > 75.0):
-                    # Camera sensor shot noise + natural optical frequency falloff
-                    calib_fake = min(12.0, max(2.0, raw_fake * 0.2 + (fft_ai + ela_ai) * 0.15))
-                elif is_synthetic:
-                    forensic_signal = max(ela_ai, fft_ai, max_patch_fake, (16.0 - ela_std) * 7.5 if ela_std < 16.0 else 0.0)
-                    calib_fake = max(76.0, min(99.2, raw_fake * 0.25 + forensic_signal * 0.75))
-                else:
-                    calib_fake = raw_fake * 0.5 + ((ela_ai + fft_ai) / 2.0) * 0.5
+        batch = torch.cat(views, dim=0).to(self.device)
+        with torch.no_grad():
+            probs = torch.softmax(self.model(batch), dim=1).mean(dim=0)
+        return probs.cpu().numpy()
 
-                calib_fake = min(99.5, max(0.5, calib_fake))
-                calib_probs = np.array([(100.0 - calib_fake)/100.0, calib_fake/100.0], dtype=np.float32)
-                pred_idx = int(calib_probs.argmax())
-                confidence = float(calib_probs[pred_idx]) * 100.0
-                probs_out = calib_probs
-            except Exception:
-                pred_idx = int(probs.argmax())
-                confidence = float(probs[pred_idx]) * 100.0
-                probs_out = probs.cpu().numpy()
-        else:
-            pred_idx = int(probs.argmax())
-            confidence = float(probs[pred_idx]) * 100.0
-            probs_out = probs.cpu().numpy()
+    def _native_crops(self, pil_img: "Image.Image") -> list:
+        """A spread of 1:1-scale crops: centre plus the four quadrant centres.
 
-        return self._build_result(
+        Five positions rather than one because a single 224 crop of a 1536px
+        image covers about 3% of it, and generator artifacts are not uniform
+        across a frame — flat sky recompresses to almost nothing while hair,
+        foliage and fabric carry most of the signal. Sampling five places and
+        averaging is far more stable than betting on the middle.
+
+        Returns ``[]`` when the image is too small to crop at native scale, which
+        keeps the view set unchanged for low-resolution input.
+        """
+        size = self.cfg.img_size
+        w, h = pil_img.size
+        if min(w, h) < size * 1.25:
+            return []
+
+        # Quadrant centres, clamped so every box stays inside the frame.
+        fracs = [(0.5, 0.5), (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+        crops = []
+        for fx, fy in fracs:
+            left = min(max(int(fx * w - size / 2), 0), w - size)
+            top = min(max(int(fy * h - size / 2), 0), h - size)
+            crops.append(pil_img.crop((left, top, left + size, top + size)))
+        return crops
+
+    def predict(self, image_source) -> Dict[str, Any]:
+        """
+        Predict without Grad-CAM (fast path) using test-time augmentation.
+
+        The CNN's probabilities are reported as-is. FFT/ELA metrics are attached
+        for display but do not influence the verdict — see forensic_metrics().
+        """
+        pil_img = _as_pil(image_source)
+        probs   = self.tta_probs(image_source, pil_img)
+
+        pred_idx = int(probs.argmax())
+        result = self._build_result(
             pred_idx   = pred_idx,
-            probs      = probs_out,
-            confidence = confidence,
+            probs      = probs,
+            confidence = float(probs[pred_idx]) * 100.0,
         )
+        result.update(forensic_metrics(pil_img))
+        return result
 
     def predict_with_gradcam(self, image_source) -> Tuple[Dict[str, Any], np.ndarray]:
         """
         Predict with Multi-Layer High-Resolution Grad-CAM heatmap.
         Returns (result_dict, heatmap_overlay_numpy_RGB).
+
+        The verdict is computed first, then Grad-CAM backpropagates *that* class,
+        so the heatmap always explains the label shown beside it.
         """
         import torch
-        import torchvision.transforms as T
-        from src.preprocessing import IMAGENET_MEAN, IMAGENET_STD
 
-        if isinstance(image_source, (str, Path)):
-            pil_img = Image.open(image_source).convert("RGB")
-        elif isinstance(image_source, Image.Image):
-            pil_img = image_source.convert("RGB")
-        elif isinstance(image_source, np.ndarray):
-            pil_img = Image.fromarray(image_source).convert("RGB")
-        else:
-            pil_img = None
+        pil_img = _as_pil(image_source)
 
         self.model.eval()
+
+        # 1. Verdict from the same TTA path as predict(), so both agree.
+        probs    = self.tta_probs(image_source, pil_img)
+        pred_idx = int(probs.argmax())
+
+        # 2. Grad-CAM for the predicted class on the plain (un-augmented) view.
         t_full = preprocess_single_image(image_source, self.cfg.img_size).to(self.device)
         t_full.requires_grad_(True)
 
         logits_full = self.model(t_full)
-        probs_full  = torch.softmax(logits_full, dim=1)[0]
-        pred_idx_full = int(probs_full.argmax())
-
-        # Backprop for Grad-CAM
-        self.model.zero_grad()
-        class_score = logits_full[0, pred_idx_full]
-        class_score.backward()
+        self.model.zero_grad(set_to_none=True)
+        logits_full[0, pred_idx].backward()
 
         heatmap = self._compute_gradcam()
 
-        if pil_img is not None:
-            orig = np.array(pil_img)
-        else:
-            orig = np.zeros((224, 224, 3), dtype=np.uint8)
-
+        orig    = np.array(pil_img) if pil_img is not None else np.zeros((224, 224, 3), dtype=np.uint8)
         overlay = self._overlay_heatmap(orig, heatmap)
-
-        # Multi-crop evaluation for probability accuracy
-        with torch.no_grad():
-            if pil_img is not None:
-                t_crops = T.Compose([
-                    T.Resize((256, 256)),
-                    T.FiveCrop(224),
-                    T.Lambda(lambda crops: torch.stack([T.Compose([T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops]))
-                ])(pil_img).to(self.device)
-                all_tensors = torch.cat([t_full.detach(), t_crops], dim=0)
-                logits_all = self.model(all_tensors)
-                probs_all = torch.softmax(logits_all, dim=1)
-                probs = probs_all.mean(dim=0)
-            else:
-                probs = probs_full
-
-        raw_fake = float(probs[1].cpu()) * 100.0
-
-        # Subject-Centric Native Patch Scanning
-        max_patch_fake = raw_fake
-        avg_patch_fake = raw_fake
-        if pil_img is not None and min(pil_img.size) >= 350:
-            try:
-                w, h = pil_img.size
-                crop_size = min(w, h, 256)
-                half = crop_size // 2
-                crops_native = [
-                    pil_img.crop((w//2 - half, h//2 - half, w//2 + half, h//2 + half)),
-                    pil_img.crop((w//2 - half, max(0, h//3 - half), w//2 + half, max(0, h//3 - half) + crop_size)),
-                    pil_img.crop((w//2 - half, min(h - crop_size, h//2), w//2 + half, min(h, h//2 + crop_size))),
-                ]
-                t_patch_list = [T.Compose([T.Resize((224, 224)), T.ToTensor(), T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])(c) for c in crops_native]
-                t_patches = torch.stack(t_patch_list).to(self.device)
-                with torch.no_grad():
-                    patch_logits = self.model(t_patches)
-                    patch_probs = torch.softmax(patch_logits, dim=1)
-                    max_patch_fake = float(patch_probs[:, 1].max().cpu()) * 100.0
-                    avg_patch_fake = float(patch_probs[:, 1].mean().cpu()) * 100.0
-            except Exception:
-                max_patch_fake = raw_fake
-                avg_patch_fake = raw_fake
-
-        # Multi-domain forensic synthesis
-        if pil_img is not None:
-            try:
-                spectral = compute_fft_spectral_score(orig)
-                ela_metrics, _ = compute_ela_analysis(pil_img)
-                ela_std = float(ela_metrics.get("ela_std", 20.0))
-                ela_ai = float(ela_metrics.get("ela_ai_score", 50.0))
-                fft_ai = float(spectral.get("spectral_ai_score", 50.0))
-                hf_ratio = float(spectral.get("hf_ratio", 0.65))
-
-                is_authentic_camera = (ela_std >= 18.0 and fft_ai <= 40.0)
-                is_synthetic = (
-                    (ela_std < 14.0 and ela_ai > 50.0) or
-                    (fft_ai > 55.0) or
-                    (avg_patch_fake > 65.0) or
-                    (raw_fake >= 60.0 and not is_authentic_camera)
-                )
-
-                if is_authentic_camera and not (fft_ai > 60.0 or avg_patch_fake > 75.0):
-                    # Camera sensor shot noise + natural optical frequency falloff
-                    calib_fake = min(12.0, max(2.0, raw_fake * 0.2 + (fft_ai + ela_ai) * 0.15))
-                elif is_synthetic:
-                    forensic_signal = max(ela_ai, fft_ai, max_patch_fake, (16.0 - ela_std) * 7.5 if ela_std < 16.0 else 0.0)
-                    calib_fake = max(76.0, min(99.2, raw_fake * 0.25 + forensic_signal * 0.75))
-                else:
-                    calib_fake = raw_fake * 0.5 + ((ela_ai + fft_ai) / 2.0) * 0.5
-
-                calib_fake = min(99.5, max(0.5, calib_fake))
-                calib_probs = np.array([(100.0 - calib_fake)/100.0, calib_fake/100.0], dtype=np.float32)
-                pred_idx = int(calib_probs.argmax())
-                confidence = float(calib_probs[pred_idx]) * 100.0
-                probs_out = calib_probs
-            except Exception:
-                pred_idx = int(probs.argmax())
-                confidence = float(probs[pred_idx]) * 100.0
-                probs_out = probs.cpu().numpy()
-        else:
-            pred_idx = int(probs.argmax())
-            confidence = float(probs[pred_idx]) * 100.0
-            probs_out = probs.cpu().numpy()
 
         result = self._build_result(
             pred_idx   = pred_idx,
-            probs      = probs_out,
-            confidence = confidence,
+            probs      = probs,
+            confidence = float(probs[pred_idx]) * 100.0,
         )
+        result.update(forensic_metrics(pil_img))
         return result, overlay
 
     def _compute_gradcam(self) -> np.ndarray:
@@ -491,7 +459,8 @@ class ClassicalPredictor:
             int(label): float(probability)
             for label, probability in zip(self.pipeline.classes_, proba)
         }
-        confidence = class_probabilities[pred_idx] * 100.0
+        # .get guards a single-class estimator, which would otherwise KeyError.
+        confidence = class_probabilities.get(pred_idx, 0.0) * 100.0
 
         label = LABEL_MAP[pred_idx]
         return {
@@ -500,8 +469,8 @@ class ClassicalPredictor:
             "emoji":       EMOJI_MAP[pred_idx],
             "confidence":  round(confidence, 2),
             "probabilities": {
-                "REAL": round(class_probabilities[0] * 100, 2),
-                "FAKE": round(class_probabilities[1] * 100, 2),
+                "REAL": round(class_probabilities.get(0, 0.0) * 100, 2),
+                "FAKE": round(class_probabilities.get(1, 0.0) * 100, 2),
             },
         }
 
@@ -551,8 +520,12 @@ def compute_fft_spectral_score(img_np: np.ndarray) -> Dict[str, Any]:
 # ─── Generator Detection ──────────────────────────────────────────────────────
 def detect_likely_generator(img: np.ndarray) -> str:
     """
-    Heuristic generator detection based on spatial & frequency statistics.
-    Detects SDXL, Midjourney, FLUX, Stable Diffusion v1/v2, DALL-E.
+    Heuristic generator label based on spatial & frequency statistics.
+
+    NOTE: this is an unvalidated heuristic. The training corpus carries no
+    per-generator ground truth, so these thresholds cannot be checked against
+    real labels — treat the output as a hint, not a finding. Validating it needs
+    a generator-labelled holdout (see src/evaluate_generators.py).
     """
     orig_h, orig_w = img.shape[:2]
     if img.shape[:2] != (224, 224):
@@ -568,14 +541,21 @@ def detect_likely_generator(img: np.ndarray) -> str:
     dft_sh = np.fft.fftshift(dft)
     mag    = np.log1p(np.abs(dft_sh))
     h, w   = mag.shape
-    center = mag[h//4:3*h//4, w//4:3*w//4]
-    high_freq_ratio = center.mean() / (mag.mean() + 1e-8)
+
+    # fftshift puts DC at the centre, so high frequencies live in the *outer*
+    # region. The previous version averaged mag[h//4:3*h//4, w//4:3*w//4] — the
+    # low-frequency centre — and compared it against > 1.3, a value that region
+    # never reaches (observed max 1.292), so the FLUX.1 branch was unreachable.
+    outer = np.ones(mag.shape, dtype=bool)
+    outer[h // 4:3 * h // 4, w // 4:3 * w // 4] = False
+    high_freq_ratio = float(mag[outer].mean() / (mag.mean() + 1e-8))
 
     # ── Texture & Color analysis ──
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
     mean_sat = cv2.cvtColor(img_resized, cv2.COLOR_RGB2HSV)[:, :, 1].mean()
 
-    # Heuristic decision tree
+    # Heuristic decision tree. The 0.96 cut is the upper quartile of the
+    # corrected ratio measured over the test split (range 0.903–0.983).
     if orig_h >= 1024 or orig_w >= 1024:
         if spectral["hf_ratio"] > 0.72:
             return "SDXL (Stable Diffusion XL)"
@@ -585,7 +565,7 @@ def detect_likely_generator(img: np.ndarray) -> str:
             return "SDXL / FLUX"
     elif laplacian_var > 800 and mean_sat > 100:
         return "Midjourney"
-    elif high_freq_ratio > 1.3 and laplacian_var > 500:
+    elif high_freq_ratio > 0.96 and laplacian_var > 500:
         return "FLUX.1"
     elif mean_sat > 80 and laplacian_var < 600:
         return "Stable Diffusion 1.5/2.1"
@@ -599,7 +579,12 @@ def detect_likely_generator(img: np.ndarray) -> str:
 def generate_explanation(result: Dict[str, Any], img: np.ndarray) -> List[str]:
     """
     Generate human-readable explanation bullets for the prediction.
-    Based on image statistics + confidence level.
+
+    These describe measurable image statistics; they are *not* independent
+    evidence for the verdict, which comes from the CNN. Frequency bullets are
+    worded as observations because the FFT statistics were measured to be
+    non-discriminative on this corpus (AUC 0.562) — asserting them as a
+    "diffusion signature" would overstate what they show.
     """
     reasons: List[str] = []
     pred   = result["prediction"]
@@ -630,12 +615,12 @@ def generate_explanation(result: Dict[str, Any], img: np.ndarray) -> List[str]:
         if symmetry > 0.85:
             reasons.append("High bilateral symmetry — common in AI-generated faces")
 
-        # Frequency anomaly (2D FFT)
+        # Frequency observation (2D FFT) — descriptive only, see docstring.
         spectral = compute_fft_spectral_score(img)
         if spectral["hf_ratio"] > 0.72:
-            reasons.append("High-frequency VAE decoder lattice artifacts detected (SDXL / Diffusion signature)")
+            reasons.append("High-frequency energy above typical range for this corpus")
         elif spectral["hf_ratio"] < 0.58:
-            reasons.append("Anomalous frequency spectrum (lacks natural high-frequency sensor noise)")
+            reasons.append("Low high-frequency energy — little fine detail or sensor noise")
 
         if not reasons:
             reasons.append("Pattern inconsistencies detected by deep neural network")
@@ -697,96 +682,169 @@ def compute_ela_analysis(img_source, quality: int = 90) -> Tuple[Dict[str, Any],
 # ─── Multi-Model Voting Ensemble Predictor ─────────────────────────────────────
 class EnsemblePredictor:
     """
-    Combines ResNet18 CNN, SVM (HOG+LBP), Random Forest, 2D FFT Spectral Analysis,
-    and Error Level Analysis (ELA) into a single bulletproof consensus engine.
+    ResNet18 CNN verdict, presented alongside advisory signals (classical models,
+    2D FFT spectrum, ELA).
+
+    The advisory signals are reported but do **not** vote on the outcome. Measured
+    on the held-out test split they are close to chance — SVM AUC 0.517, Random
+    Forest 0.546, FFT 0.562, ELA 0.514 — while the CNN reaches 0.981. The previous
+    weighted blend (CNN 35% / FFT 25% / ELA 20% / SVM 10% / RF 10%) cost 10.5
+    points of accuracy overall and 68 points on high-resolution real photographs.
+    See diag_forensics.py and diag_strategy.py.
     """
+
+    ADVISORY_CLASSICAL = ("svm", "random_forest")
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.cnn_predictor = CNNPredictor(cfg)
+        # Share the cached CNNPredictor so switching between "resnet18" and
+        # "ensemble" in the UI does not load a second copy of the checkpoint.
+        self.cnn_predictor = _get_predictor("resnet18", cfg)
+        self._classical: Dict[str, "ClassicalPredictor"] = {}
+        for key in self.ADVISORY_CLASSICAL:
+            try:
+                self._classical[key] = _get_predictor(key, cfg)
+            except Exception as exc:
+                logger.warning(f"  Advisory model '{key}' unavailable: {exc}")
 
     def predict(self, image_source) -> Dict[str, Any]:
-        # 1. ResNet18 CNN prediction
-        cnn_res = self.cnn_predictor.predict(image_source)
-        cnn_fake_prob = float(cnn_res["probabilities"]["FAKE"])
+        # ── Verdict: ResNet18 CNN only ──
+        result = self.cnn_predictor.predict(image_source)
+        cnn_fake = float(result["probabilities"]["FAKE"])
 
-        # 2. Classical SVM prediction (if trained)
-        svm_fake_prob = cnn_fake_prob
-        try:
-            svm_pred = ClassicalPredictor("svm", self.cfg)
-            svm_res = svm_pred.predict(image_source)
-            svm_fake_prob = float(svm_res["probabilities"]["FAKE"])
-        except Exception:
-            pass
+        # ── Advisory signals (displayed, never decisive) ──
+        advisory: Dict[str, str] = {"ResNet18 CNN (verdict)": result["prediction"]}
 
-        # 3. Classical Random Forest prediction (if trained)
-        rf_fake_prob = cnn_fake_prob
-        try:
-            rf_pred = ClassicalPredictor("random_forest", self.cfg)
-            rf_res = rf_pred.predict(image_source)
-            rf_fake_prob = float(rf_res["probabilities"]["FAKE"])
-        except Exception:
-            pass
+        for key, predictor in self._classical.items():
+            try:
+                res = predictor.predict(image_source)
+                advisory[f"{key} (advisory)"] = res["prediction"]
+            except Exception as exc:
+                logger.debug(f"  Advisory model '{key}' failed on this image: {exc}")
 
-        # 4. 2D FFT Spectral Analysis
-        if isinstance(image_source, (str, Path)):
-            img_np = np.array(Image.open(image_source).convert("RGB"))
-        elif isinstance(image_source, Image.Image):
-            img_np = np.array(image_source.convert("RGB"))
-        elif isinstance(image_source, np.ndarray):
-            img_np = image_source
-        else:
-            img_np = np.zeros((224, 224, 3), dtype=np.uint8)
-
-        spectral = compute_fft_spectral_score(img_np)
-        spectral_fake_prob = float(spectral["spectral_ai_score"])
-
-        # 5. ELA Analysis
-        ela_metrics, _ = compute_ela_analysis(image_source)
-        ela_fake_prob = float(ela_metrics["ela_ai_score"])
-
-        # ── Weighted Multi-Domain Consensus ──
-        # ResNet18: 35%, 2D FFT: 25%, ELA: 20%, SVM: 10%, Random Forest: 10%
-        ensemble_fake_prob = (
-            0.35 * cnn_fake_prob +
-            0.25 * spectral_fake_prob +
-            0.20 * ela_fake_prob +
-            0.10 * svm_fake_prob +
-            0.10 * rf_fake_prob
+        spectral = result.get("spectral_analysis") or compute_fft_spectral_score(_as_numpy(image_source))
+        advisory["2D FFT Spectrum (advisory)"] = (
+            "FAKE" if float(spectral["spectral_ai_score"]) >= 50 else "REAL"
         )
-        ensemble_fake_prob = min(99.9, max(0.1, ensemble_fake_prob))
+        ela = result.get("ela_metrics")
+        if ela:
+            advisory["ELA Inspector (advisory)"] = (
+                "FAKE" if float(ela["ela_ai_score"]) >= 50 else "REAL"
+            )
 
-        is_fake = ensemble_fake_prob >= 50.0
-        label = "FAKE" if is_fake else "REAL"
-        idx = 1 if is_fake else 0
-        emoji = "🤖" if is_fake else "✅"
-
-        # Model breakdown
-        votes = {
-            "ResNet18 CNN": "FAKE" if cnn_fake_prob >= 50 else "REAL",
-            "SVM (HOG+LBP)": "FAKE" if svm_fake_prob >= 50 else "REAL",
-            "Random Forest": "FAKE" if rf_fake_prob >= 50 else "REAL",
-            "2D FFT Spectrum": "FAKE" if spectral_fake_prob >= 50 else "REAL",
-            "ELA Inspector": "FAKE" if ela_fake_prob >= 50 else "REAL",
-        }
-
-        fake_votes = sum(1 for v in votes.values() if v == "FAKE")
-        consensus_status = f"{fake_votes}/5 Models Voted FAKE"
-
-        result = {
-            "prediction": label,
-            "label_index": idx,
-            "emoji": emoji,
-            "confidence": round(ensemble_fake_prob if is_fake else (100.0 - ensemble_fake_prob), 2),
-            "probabilities": {
-                "REAL": round(100.0 - ensemble_fake_prob, 2),
-                "FAKE": round(ensemble_fake_prob, 2),
-            },
-            "spectral_analysis": spectral,
-            "ela_metrics": ela_metrics,
-            "ensemble_votes": votes,
-            "consensus_status": consensus_status,
-        }
+        agree = sum(1 for v in advisory.values() if v == result["prediction"])
+        result["ensemble_votes"]   = advisory
+        result["consensus_status"] = (
+            f"{agree}/{len(advisory)} signals agree with the CNN verdict "
+            f"({cnn_fake:.1f}% FAKE) — advisory signals are informational only"
+        )
         return result
+
+
+class ClipPredictor:
+    """Frozen CLIP ViT-L/14 with retrained calibrated linear heads."""
+
+    def __init__(self, cfg: Config) -> None:
+        from src.score_clip import ClipLinearScorer
+
+        self.cfg = cfg
+        self.scorer = ClipLinearScorer(cfg=cfg, model_type="clip", workers=0)
+        # The per-view heads are Platt-calibrated, so 0.5 is the natural
+        # deployment boundary. The stored fixed-FPR threshold was selected on
+        # the same-source validation corpus and produced too many false alarms
+        # on independent web photographs; it remains available to evaluation,
+        # but is not silently imposed on arbitrary uploads.
+        self.threshold = 0.5
+        self.checkpoint_meta = {
+            **self.scorer.meta,
+            "file": "models/clip_linear/heads.joblib",
+            "device": self.scorer.device,
+            "threshold": self.threshold,
+            "target_fpr": self.scorer.target_fpr,
+            "stored_validation_threshold": self.scorer.served_threshold(),
+        }
+
+    @staticmethod
+    def _threshold_adjusted_probability(p_fake: float, threshold: float) -> float:
+        """Shift calibrated odds so the deployed threshold maps to 50%."""
+        eps = 1e-6
+        p = float(np.clip(p_fake, eps, 1.0 - eps))
+        t = float(np.clip(threshold, eps, 1.0 - eps))
+        shifted_logit = np.log(p / (1.0 - p)) - np.log(t / (1.0 - t))
+        return float(1.0 / (1.0 + np.exp(-shifted_logit)))
+
+    @staticmethod
+    def _review_recommended(p_fake: float, view_std: float) -> bool:
+        """Whether a binary answer should be treated as inconclusive."""
+        # The wide interval is intentional. On the independent web tier,
+        # accepting only <=5% REAL or >=90% FAKE scores raises selective
+        # accuracy to about 95%, at roughly 50% coverage. A forensic tool should
+        # abstain rather than dress a weak score up as certainty.
+        return bool(0.05 < p_fake < 0.90 or view_std >= 0.22)
+
+    def predict(self, image_source) -> Dict[str, Any]:
+        pil = _as_pil(image_source)
+        if pil is None:
+            raise TypeError(f"Unsupported image source: {type(image_source)!r}")
+        details = self.scorer.score_image_details(pil)
+        if details is None:
+            raise ValueError("Image could not be decoded by the CLIP pipeline")
+        raw = details["p_fake"]
+
+        p_fake = self._threshold_adjusted_probability(raw, self.threshold)
+        probs = np.array([1.0 - p_fake, p_fake], dtype=np.float64)
+        pred_idx = int(p_fake >= 0.5)
+        result = CNNPredictor._build_result(
+            pred_idx=pred_idx,
+            probs=probs,
+            confidence=float(probs[pred_idx]) * 100.0,
+        )
+        result["raw_probability_fake"] = round(float(raw) * 100.0, 2)
+        result["decision_threshold"] = round(float(self.threshold) * 100.0, 2)
+        result["model_name"] = self.scorer.name
+        result["view_probabilities"] = {
+            name: round(value * 100.0, 2)
+            for name, value in details["views"].items()
+        }
+        result["view_disagreement"] = round(details["view_std"] * 100.0, 2)
+        # Binary image forensics is not reliable enough to force a confident
+        # answer on every upload. Scores near the boundary or contradictory
+        # views are explicitly routed to manual review instead.
+        result["review_recommended"] = self._review_recommended(
+            raw, details["view_std"]
+        )
+        result["reliability"] = (
+            "inconclusive" if result["review_recommended"] else "high"
+        )
+        result.update(forensic_metrics(pil))
+        return result
+
+
+# ─── Predictor Cache ──────────────────────────────────────────────────────────
+# Loading the CNN checkpoint costs a ~46MB disk read plus a device transfer, and
+# the sklearn pickles up to 8MB each. predict_image() used to rebuild them on
+# every call. Keyed by (model_type, checkpoint path) so pointing cfg at a
+# different checkpoint still builds a fresh predictor.
+_PREDICTOR_CACHE: Dict[Tuple[str, str], Any] = {}
+
+
+def _get_predictor(model_type: str, cfg: Config):
+    key = (model_type, str(cfg.models_dir / cfg.cnn_model_name))
+    if key not in _PREDICTOR_CACHE:
+        if model_type in ("clip", "clip_linear"):
+            _PREDICTOR_CACHE[key] = ClipPredictor(cfg)
+        elif model_type == "ensemble":
+            _PREDICTOR_CACHE[key] = EnsemblePredictor(cfg)
+        elif model_type == "resnet18":
+            _PREDICTOR_CACHE[key] = CNNPredictor(cfg)
+        else:
+            _PREDICTOR_CACHE[key] = ClassicalPredictor(model_type, cfg)
+    return _PREDICTOR_CACHE[key]
+
+
+def clear_predictor_cache() -> None:
+    """Drop cached predictors (call after retraining or swapping a checkpoint)."""
+    _PREDICTOR_CACHE.clear()
 
 
 # ─── Full Prediction Pipeline ─────────────────────────────────────────────────
@@ -799,61 +857,46 @@ def predict_image(
     """
     Top-level prediction function used by the Streamlit app.
 
+    The verdict comes from the CNN (or the selected classical model) alone. FFT
+    and ELA metrics are attached under "spectral_analysis" / "ela_metrics" for
+    display, but never modify the prediction — see forensic_metrics().
+
     Returns:
         result  : dict with prediction, confidence, explanation, generator
         heatmap : numpy RGB overlay (or None if with_gradcam=False / classical model)
     """
-    # Load image as numpy array for explanation/generator
-    if isinstance(image_source, (str, Path)):
-        img_np = np.array(Image.open(image_source).convert("RGB"))
-    elif isinstance(image_source, Image.Image):
-        img_np = np.array(image_source.convert("RGB"))
-    elif isinstance(image_source, np.ndarray):
-        img_np = image_source
-    else:
-        img_np = np.zeros((224, 224, 3), dtype=np.uint8)
+    from src.image_forensics import analyze_image_provenance
 
+    # Keep original encoded bytes available to the provenance analyser, while
+    # giving the ML pipeline a decoded RGB image it already understands.
+    original_source = image_source
+    model_source = _as_pil(image_source)
+    if model_source is None:
+        raise TypeError(f"Unsupported image source: {type(image_source)!r}")
+
+    img_np  = _as_numpy(model_source)
     heatmap = None
 
-    if model_type == "ensemble":
-        ensemble_pred = EnsemblePredictor(cfg)
-        result = ensemble_pred.predict(image_source)
+    if model_type in ("clip", "clip_linear"):
+        result = _get_predictor("clip", cfg).predict(model_source)
+    elif model_type == "ensemble":
+        ensemble_pred = _get_predictor("ensemble", cfg)
+        result = ensemble_pred.predict(model_source)
         if with_gradcam:
             try:
-                cnn_pred = CNNPredictor(cfg)
-                _, heatmap = cnn_pred.predict_with_gradcam(image_source)
-            except Exception:
+                _, heatmap = ensemble_pred.cnn_predictor.predict_with_gradcam(model_source)
+            except Exception as exc:
+                logger.debug(f"  Grad-CAM unavailable: {exc}")
                 heatmap = None
     elif model_type == "resnet18":
-        predictor = CNNPredictor(cfg)
+        predictor = _get_predictor("resnet18", cfg)
         if with_gradcam:
-            result, heatmap = predictor.predict_with_gradcam(image_source)
+            result, heatmap = predictor.predict_with_gradcam(model_source)
         else:
-            result = predictor.predict(image_source)
+            result = predictor.predict(model_source)
     else:
-        predictor = ClassicalPredictor(model_type, cfg)
-        result    = predictor.predict(image_source)
-        predictor = ClassicalPredictor(model_type, cfg)
-        result    = predictor.predict(image_source)
-
-    # ── Hybrid Spatial + 2D FFT Spectral Fusion ──
-    spectral = compute_fft_spectral_score(img_np)
-    result["spectral_analysis"] = spectral
-
-    # If 2D FFT spectral analysis shows strong VAE lattice signature (>75% AI score)
-    # or high-frequency ratio > 0.76 (typical for SDXL/FLUX/Midjourney), boost FAKE probability
-    if spectral["spectral_ai_score"] > 75.0 or spectral["hf_ratio"] > 0.76:
-        # Fuse probabilities: 60% Model + 40% FFT Spectral
-        model_fake_prob = float(result["probabilities"]["FAKE"])
-        fused_fake_prob = min(99.9, max(0.1, model_fake_prob * 0.5 + spectral["spectral_ai_score"] * 0.5))
-
-        if fused_fake_prob >= 50.0:
-            result["prediction"]  = "FAKE"
-            result["label_index"] = 1
-            result["emoji"]       = "🤖"
-            result["confidence"]  = round(fused_fake_prob, 2)
-            result["probabilities"]["FAKE"] = round(fused_fake_prob, 2)
-            result["probabilities"]["REAL"] = round(100.0 - fused_fake_prob, 2)
+        result = _get_predictor(model_type, cfg).predict(model_source)
+        result.update(forensic_metrics(model_source))
 
     # Enrich result
     result["explanation"] = generate_explanation(result, img_np)
@@ -861,6 +904,7 @@ def predict_image(
         result["likely_generator"] = detect_likely_generator(img_np)
     else:
         result["likely_generator"] = "N/A"
+    result["provenance_analysis"] = analyze_image_provenance(original_source)
 
     return result, heatmap
 
@@ -870,8 +914,8 @@ def main():
     parser = argparse.ArgumentParser(description="TruthLens — Single Image Prediction")
     parser.add_argument("--image",   required=True, help="Path to input image.")
     parser.add_argument(
-        "--model", default="resnet18",
-        choices=["resnet18", "logistic_regression", "decision_tree",
+        "--model", default="clip",
+        choices=["clip", "resnet18", "logistic_regression", "decision_tree",
                  "random_forest", "svm", "knn", "naive_bayes"],
         help="Model to use for prediction.",
     )
@@ -897,6 +941,11 @@ def main():
     print(f"  Prob FAKE  : {result['probabilities']['FAKE']:.2f}%")
     if result["prediction"] == "FAKE":
         print(f"  Generator  : {result['likely_generator']}")
+    provenance = result.get("provenance_analysis") or {}
+    if provenance.get("available"):
+        print(f"  Provenance : {provenance.get('summary', 'analysed')}")
+        for signal in provenance.get("signals", [])[:5]:
+            print(f"    [{signal['level']}] {signal['title']}: {signal['detail']}")
     print("\n  Explanation:")
     for reason in result["explanation"]:
         print(f"    • {reason}")

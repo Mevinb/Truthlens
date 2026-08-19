@@ -4,9 +4,9 @@ TruthLens — HuggingFace CIFAKE Dataset Downloader & Extractor
 =============================================================
 Downloads CIFAKE from Hugging Face (`dragonintelligence/CIFAKE-image-dataset`)
 and saves images into local folder structure:
-  dataset/train/real/ & fake/
-  dataset/val/real/   & fake/
-  dataset/test/real/  & fake/
+  datasets/prepared/cifake/train/real/ & fake/
+  datasets/prepared/cifake/val/real/   & fake/
+  datasets/prepared/cifake/test/real/  & fake/
 """
 
 import os
@@ -18,7 +18,8 @@ from tqdm import tqdm
 from PIL import Image
 
 ROOT_DIR = Path(__file__).parent.parent
-DATA_DIR = ROOT_DIR / "dataset"
+DATASETS_DIR = ROOT_DIR / "datasets"
+DATA_DIR = DATASETS_DIR / "prepared" / "cifake"
 
 def main():
     print("=" * 60)
@@ -74,7 +75,8 @@ def main():
     print("=" * 60)
     for split in ["train", "val", "test"]:
         for cls in ["real", "fake"]:
-            print(f"  dataset/{split}/{cls:5s} → {counts[split][cls]:6,} images")
+            rel = DATA_DIR.relative_to(ROOT_DIR)
+            print(f"  {rel}/{split}/{cls:5s} → {counts[split][cls]:6,} images")
     print("=" * 60 + "\n")
 
 if __name__ == "__main__":

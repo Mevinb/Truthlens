@@ -4,7 +4,7 @@ TruthLens — Multi-Domain & Multi-Resolution Combined Dataset Ingestion
 ========================================================================
 Combines:
   1. High-Resolution DSLR & Smartphone Camera Photos + SDXL/Midjourney AI Art (dataset_highres_master)
-  2. CIFAKE Benchmark Real & Synthetic AI Images (dataset)
+  2. CIFAKE Benchmark Real & Synthetic AI Images (datasets/prepared/cifake)
 
 This produces a robust model capable of accurately detecting BOTH:
   • Modern 4K smartphone photos (no false positive FAKE)
@@ -21,7 +21,8 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent.parent
 COMBINED_DIR = ROOT_DIR / "dataset_combined"
 HIGHRES_DIR = ROOT_DIR / "dataset_highres_master"
-CIFAKE_DIR = ROOT_DIR / "dataset"
+DATASETS_DIR = ROOT_DIR / "datasets"
+CIFAKE_DIR = DATASETS_DIR / "prepared" / "cifake"
 
 def main():
     print("=" * 70)

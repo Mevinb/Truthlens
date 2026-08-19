@@ -1,0 +1,13 @@
+# Streamlit's own theme. Setting it here makes native widgets (selectbox, slider,
+# tabs, file uploader) render dark natively, so app/theme.py only has to add
+# character instead of overriding Streamlit's light defaults with !important.
+[theme]
+base                     = "dark"
+primaryColor             = "#7c5cff"
+backgroundColor          = "#0a0c14"
+secondaryBackgroundColor = "#12151f"
+textColor                = "#e7e9f0"
+font                     = "sans serif"
+
+[browser]
+gatherUsageStats = false

@@ -7,7 +7,7 @@ Builds a curated, balanced dataset covering ALL resolution tiers:
   Tier 2: Medium-Resolution (256px) — Multi-domain photo/synthetic archive
   Tier 3: Low-Resolution / Compressed (32px - 64px) — CIFAKE benchmark
 
-Outputs to: dataset_multires/{train/, val/, test/} with balanced real & fake classes.
+Outputs to: datasets/prepared/multires/{train/, val/, test/} with balanced real & fake classes.
 """
 
 import sys
@@ -16,10 +16,10 @@ import random
 import shutil
 from pathlib import Path
 from PIL import Image, ImageOps
-from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).parent.parent
-OUTPUT_DIR = ROOT_DIR / "dataset_multires"
+DATASETS_DIR = ROOT_DIR / "datasets"
+OUTPUT_DIR = DATASETS_DIR / "prepared" / "multires"
 
 def copy_or_save_image(src_path: Path, dst_path: Path, quality: int = 95):
     try:
@@ -75,13 +75,13 @@ def main(
     highres_fake = []
 
     # Local modern corpus
-    modern_dir = ROOT_DIR / "dataset_modern_corpus"
+    modern_dir = DATASETS_DIR / "prepared" / "modern_corpus"
     if modern_dir.exists():
         highres_real.extend(list((modern_dir / "train" / "real").glob("*.jpg")))
         highres_fake.extend(list((modern_dir / "train" / "fake").glob("*.jpg")))
 
     # Local highres corpus
-    highres_corpus_dir = ROOT_DIR / "dataset_highres_corpus"
+    highres_corpus_dir = DATASETS_DIR / "prepared" / "highres_corpus"
     if highres_corpus_dir.exists():
         highres_real.extend(list((highres_corpus_dir / "train" / "real").glob("*.jpg")))
         highres_fake.extend(list((highres_corpus_dir / "train" / "fake").glob("*.jpg")))
@@ -111,15 +111,24 @@ def main(
     med_real = []
     med_fake = []
 
-    archive_dir = ROOT_DIR / "dataset" / "archive"
-    if archive_dir.exists():
-        for d in ["Data Set 1", "Data Set 2", "Data Set 3", "Data Set 4"]:
-            real_path = archive_dir / d / d / "train" / "real"
-            fake_path = archive_dir / d / d / "train" / "fake"
-            if real_path.exists():
-                med_real.extend(list(real_path.glob("*.jpg")))
-            if fake_path.exists():
-                med_fake.extend(list(fake_path.glob("*.jpg")))
+    prepared_archive_dir = DATASETS_DIR / "prepared" / "legacy_archive"
+    if prepared_archive_dir.exists():
+        real_path = prepared_archive_dir / "train" / "real"
+        fake_path = prepared_archive_dir / "train" / "fake"
+        if real_path.exists():
+            med_real.extend(list(real_path.glob("*.jpg")))
+        if fake_path.exists():
+            med_fake.extend(list(fake_path.glob("*.jpg")))
+    else:
+        archive_dir = DATASETS_DIR / "raw" / "legacy_archive"
+        if archive_dir.exists():
+            for d in ["Data Set 1", "Data Set 2", "Data Set 3", "Data Set 4"]:
+                real_path = archive_dir / d / d / "train" / "real"
+                fake_path = archive_dir / d / d / "train" / "fake"
+                if real_path.exists():
+                    med_real.extend(list(real_path.glob("*.jpg")))
+                if fake_path.exists():
+                    med_fake.extend(list(fake_path.glob("*.jpg")))
 
     print(f"  Found {len(med_real):,} 256px Real, {len(med_fake):,} 256px Fake.")
     for cls, img_list in [("real", med_real), ("fake", med_fake)]:
@@ -138,7 +147,7 @@ def main(
     # 3. Low-Resolution Tier (32px - 64px CIFAKE Benchmark)
     # =========================================================================
     print("\n[Tier 3/3] Ingesting Low-Resolution (32px) Benchmark Images...")
-    cifake_dir = ROOT_DIR / "dataset"
+    cifake_dir = DATASETS_DIR / "prepared" / "cifake"
     cifake_real = list((cifake_dir / "train" / "real").glob("*.jpg"))
     cifake_fake = list((cifake_dir / "train" / "fake").glob("*.jpg"))
 
@@ -165,7 +174,8 @@ def main(
         n_fake = counts[split]["fake"]
         total_split = n_real + n_fake
         total_all += total_split
-        print(f"  dataset_multires/{split:6s} → Real: {n_real:6,} | Fake: {n_fake:6,} | Total: {total_split:6,}")
+        rel = OUTPUT_DIR.relative_to(ROOT_DIR)
+        print(f"  {rel}/{split:6s} → Real: {n_real:6,} | Fake: {n_fake:6,} | Total: {total_split:6,}")
 
     print("-" * 75)
     print(f"  GRAND TOTAL MULTI-RESOLUTION IMAGES: {total_all:,}")

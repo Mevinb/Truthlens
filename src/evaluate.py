@@ -53,8 +53,15 @@ logger = get_logger(__name__, log_file=Path("results/logs/evaluate.log"))
 
 
 # ─── CNN Evaluation ───────────────────────────────────────────────────────────
-def evaluate_cnn(cfg: Config) -> Dict[str, Any]:
-    """Load the best ResNet18 checkpoint and evaluate on the test set."""
+def evaluate_cnn(cfg: Config, tta: bool = True) -> Dict[str, Any]:
+    """Load the best ResNet18 checkpoint and evaluate on the test set.
+
+    With tta=True (default) inference runs through CNNPredictor.tta_probs — the
+    exact path app/app.py and predict_image() serve. Measuring the bare model
+    instead reports metrics no user ever sees, which is how a 10-point accuracy
+    regression in the served path once went undetected here. Pass --no-tta for
+    the faster batched single-crop measurement.
+    """
     from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
     ckpt_path = cfg.models_dir / cfg.cnn_model_name
@@ -64,10 +71,8 @@ def evaluate_cnn(cfg: Config) -> Dict[str, Any]:
         return {}
 
     device = get_device()
-    model  = build_model(cfg.num_classes).to(device)
 
-    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint["model_state"])
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     logger.info(
         f"  Loaded CNN checkpoint (epoch {checkpoint.get('epoch','?')}, "
         f"val_acc={checkpoint.get('val_acc', 0):.2f}%)"
@@ -79,28 +84,47 @@ def evaluate_cnn(cfg: Config) -> Dict[str, Any]:
         return {}
 
     dataset = CIFAKEDataset(test_dir, split="test", img_size=cfg.img_size)
-    loader  = DataLoader(
-        dataset, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=device.type == "cuda",
-    )
 
-    model.eval()
-    all_preds, all_labels, all_probs = [], [], []
+    if tta:
+        from PIL import Image as PILImage
 
-    with torch.no_grad():
-        for images, labels in tqdm(loader, desc="CNN Inference", ncols=80):
-            images = images.to(device)
-            logits = model(images)
-            probs  = torch.softmax(logits, dim=1)[:, 1]   # prob of FAKE class
-            preds  = logits.argmax(dim=1)
+        from src.predict import CNNPredictor
 
-            all_preds.append(preds.cpu().numpy())
-            all_labels.append(labels.numpy())
-            all_probs.append(probs.cpu().numpy())
+        predictor = CNNPredictor(cfg)
+        probs, labels = [], []
+        for fpath, label in tqdm(dataset.samples, desc="CNN Inference (TTA)", ncols=80):
+            img = PILImage.open(fpath).convert("RGB")
+            probs.append(float(predictor.tta_probs(img, img)[1]))
+            labels.append(label)
 
-    y_pred  = np.concatenate(all_preds)
-    y_true  = np.concatenate(all_labels)
-    y_score = np.concatenate(all_probs)
+        y_score = np.array(probs)
+        y_true  = np.array(labels)
+        y_pred  = (y_score >= 0.5).astype(int)
+    else:
+        model = build_model(cfg.num_classes).to(device)
+        model.load_state_dict(checkpoint["model_state"])
+        model.eval()
+
+        loader = DataLoader(
+            dataset, batch_size=cfg.batch_size, shuffle=False,
+            num_workers=cfg.num_workers, pin_memory=device.type == "cuda",
+        )
+
+        all_preds, all_labels, all_probs = [], [], []
+        with torch.no_grad():
+            for images, labels in tqdm(loader, desc="CNN Inference", ncols=80):
+                images = images.to(device)
+                logits = model(images)
+                probs  = torch.softmax(logits, dim=1)[:, 1]   # prob of FAKE class
+                preds  = logits.argmax(dim=1)
+
+                all_preds.append(preds.cpu().numpy())
+                all_labels.append(labels.numpy())
+                all_probs.append(probs.cpu().numpy())
+
+        y_pred  = np.concatenate(all_preds)
+        y_true  = np.concatenate(all_labels)
+        y_score = np.concatenate(all_probs)
 
     acc  = accuracy_score(y_true, y_pred)
     prec = precision_score(y_true, y_pred, zero_division=0)
@@ -122,6 +146,7 @@ def evaluate_cnn(cfg: Config) -> Dict[str, Any]:
 
     metrics = {
         "model":     "ResNet18",
+        "inference": "tta" if tta else "single_crop",
         "accuracy":  round(acc,  4),
         "precision": round(prec, 4),
         "recall":    round(rec,  4),
@@ -192,13 +217,13 @@ def evaluate_classical_model(
 
 
 # ─── Evaluate All ─────────────────────────────────────────────────────────────
-def evaluate_all(cfg: Config) -> Dict[str, Dict]:
+def evaluate_all(cfg: Config, tta: bool = True) -> Dict[str, Dict]:
     """Evaluate every trained model and produce a comparison report."""
     all_results: Dict[str, Dict] = {}
 
     # CNN
     logger.info("\n[1/7] Evaluating ResNet18 (CNN) ...")
-    cnn_metrics = evaluate_cnn(cfg)
+    cnn_metrics = evaluate_cnn(cfg, tta=tta)
     if cnn_metrics:
         all_results["ResNet18"] = cnn_metrics
 
@@ -262,13 +287,20 @@ def main():
     )
     parser.add_argument("--data-dir", type=Path, default=Config().data_dir)
     parser.add_argument("--model-name", default=Config().cnn_model_name)
+    parser.add_argument(
+        "--no-tta",
+        action="store_true",
+        help="Evaluate the bare checkpoint (single 224 crop, batched) instead of "
+             "the flip + five-crop TTA path the app serves. Faster, but the "
+             "resulting numbers describe a model nothing in the project uses.",
+    )
     args = parser.parse_args()
     cfg  = Config(data_dir=args.data_dir, cnn_model_name=args.model_name)
 
     if args.model == "all":
-        evaluate_all(cfg)
+        evaluate_all(cfg, tta=not args.no_tta)
     elif args.model == "resnet18":
-        evaluate_cnn(cfg)
+        evaluate_cnn(cfg, tta=not args.no_tta)
     else:
         name_map = {
             "svm": ("SVM",                 cfg.models_dir / "svm.pkl"),

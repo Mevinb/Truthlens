@@ -21,8 +21,9 @@ import zipfile
 from pathlib import Path
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-ROOT_DIR   = Path(__file__).parent.parent
-DATA_DIR   = ROOT_DIR / "dataset"
+ROOT_DIR = Path(__file__).parent.parent
+DATASETS_DIR = ROOT_DIR / "datasets"
+DATA_DIR = DATASETS_DIR / "prepared" / "cifake"
 KAGGLE_ID  = "birdy654/cifake-real-and-ai-generated-synthetic-images"
 MANUAL_URL = "https://www.kaggle.com/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images"
 
@@ -109,7 +110,7 @@ def print_manual_instructions() -> None:
         "  2. Click 'Download' (requires free Kaggle account).\n"
         "  3. Extract the zip file.\n"
         "  4. Place extracted folders so your structure looks like:\n\n"
-        "       dataset/\n"
+        "       datasets/prepared/cifake/\n"
         "         train/ real/  fake/\n"
         "         val/   real/  fake/\n"
         "         test/  real/  fake/\n\n"

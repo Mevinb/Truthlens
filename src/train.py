@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision import models
@@ -103,7 +103,7 @@ def run_epoch(
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            with autocast(enabled=(device.type == "cuda")):
+            with autocast(device.type, enabled=(device.type == "cuda")):
                 outputs = model(images)
                 loss    = criterion(outputs, labels)
 
@@ -165,6 +165,14 @@ def train(cfg: Config, initial_checkpoint: Path | None = None) -> dict:
             "  python dataset/download_cifake.py --method manual"
         )
 
+    if "val" not in loaders:
+        raise RuntimeError(
+            f"Validation split not found under {cfg.data_dir / 'val'}.\n"
+            "Training without it would validate on shuffled, augmented training "
+            "data, making early stopping and best-checkpoint selection "
+            "meaningless. Create a val/real + val/fake split first."
+        )
+
     model     = build_model(cfg.num_classes).to(device)
     if initial_checkpoint is not None:
         checkpoint = torch.load(
@@ -184,7 +192,7 @@ def train(cfg: Config, initial_checkpoint: Path | None = None) -> dict:
         model.load_state_dict(checkpoint["model_state"])
         logger.info(f"  Initial weights loaded from {initial_checkpoint}")
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
-    scaler    = GradScaler(enabled=(device.type == "cuda"))
+    scaler    = GradScaler(device.type, enabled=(device.type == "cuda"))
     stopper   = EarlyStopping(patience=cfg.patience)
 
     # TensorBoard — optional, falls back gracefully if not installed
@@ -238,7 +246,7 @@ def train(cfg: Config, initial_checkpoint: Path | None = None) -> dict:
             model, loaders["train"], criterion, optimizer, scaler, device, is_train=True
         )
         val_loss, val_acc = run_epoch(
-            model, loaders.get("val", loaders["train"]),
+            model, loaders["val"],
             criterion, optimizer, scaler, device, is_train=False
         )
         scheduler.step()
@@ -274,7 +282,13 @@ def train(cfg: Config, initial_checkpoint: Path | None = None) -> dict:
                     "val_loss":    val_loss,
                     "val_acc":     val_acc,
                     "class_names": cfg.class_names,
-                    "config":      cfg.__dict__,
+                    # Paths are stringified so the checkpoint holds only plain
+                    # types; embedding PosixPath forced weights_only=False on
+                    # every load, which future torch versions default away from.
+                    "config": {
+                        k: (str(v) if isinstance(v, Path) else v)
+                        for k, v in cfg.__dict__.items()
+                    },
                 },
                 best_ckpt,
             )
@@ -303,7 +317,30 @@ def train(cfg: Config, initial_checkpoint: Path | None = None) -> dict:
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Train TruthLens ResNet18 model.")
-    parser.add_argument("--data-dir",   type=str,   default="dataset", help="Dataset directory (dataset or dataset_highres)")
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="datasets/prepared/cifake",
+        help="Dataset directory (default: datasets/prepared/cifake)",
+    )
+    parser.add_argument(
+        "--extra-data-dir", type=str, action="append", default=[],
+        metavar="DIR",
+        help="Additional corpus root merged into every split; repeatable. "
+             "e.g. --data-dir datasets/prepared/multires --extra-data-dir datasets/prepared/modern_v2",
+    )
+    parser.add_argument(
+        "--modern-aug", action="store_true",
+        help="Use the shortcut-breaking train pipeline (JPEG recompression and "
+             "aspect padding applied to both classes, lighter photometric "
+             "jitter). Required when training on datasets/prepared/modern_v2, whose "
+             "container format and image orientation otherwise correlate with "
+             "the label.",
+    )
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="DataLoader workers. Raise for the modern pipeline: "
+                             "decoding and re-encoding megapixel images is the "
+                             "bottleneck, not the GPU.")
     parser.add_argument("--model-name", type=str,   default="resnet18_truthlens.pth", help="Model checkpoint output filename")
     parser.add_argument("--epochs",     type=int,   default=20)
     parser.add_argument("--batch-size", type=int,   default=64)
@@ -320,6 +357,8 @@ def main():
 
     cfg = Config(
         data_dir       = Path(args.data_dir),
+        extra_data_dirs= tuple(args.extra_data_dir),
+        modern_augment = args.modern_aug,
         cnn_model_name = args.model_name,
         num_epochs     = args.epochs,
         batch_size     = args.batch_size,
@@ -327,6 +366,7 @@ def main():
         lr_finetune    = args.lr_tune,
         freeze_epochs  = args.freeze_epochs,
         patience       = args.patience,
+        num_workers    = args.num_workers,
     )
     train(cfg, initial_checkpoint=args.initial_checkpoint)
 

@@ -13,7 +13,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).parent.parent
-OUTPUT_DIR = ROOT_DIR / "dataset_multires"
+OUTPUT_DIR = ROOT_DIR / "datasets" / "prepared" / "multires"
 
 def main(n_images: int = 2500):
     print("=" * 70)

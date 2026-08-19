@@ -1,4 +1,4 @@
-# Python Cache & Testing
+l# Python Cache & Testing
 __pycache__/
 *.py[cod]
 *$py.class
@@ -25,13 +25,14 @@ venv_truthlens/
 *.ipynb_checkpoints/
 
 # Datasets (all variants and extracts)
+datasets/*
+!datasets/README.md
+
+# Back-compat for older layouts (pre-datasets/ migration)
 dataset/train/
 dataset/val/
 dataset/test/
 dataset/archive/
-dataset/**/*.jpg
-dataset/**/*.png
-dataset_*/
 scratch_demo/
 *.zip
 *.tar
@@ -67,4 +68,3 @@ Thumbs.db
 *.env
 .kaggle/
 kaggle.json
-

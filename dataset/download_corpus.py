@@ -177,7 +177,7 @@ def build(output_dir: Path, per_architecture: int, highres_per_class: int, cifak
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download a diverse, high-resolution, deduplicated image corpus.")
-    parser.add_argument("--output-dir", type=Path, default=Path("dataset_corpus"))
+    parser.add_argument("--output-dir", type=Path, default=Path("datasets/prepared/corpus"))
     parser.add_argument("--per-architecture", type=int, default=10_000, help="Community Forensics fake images per generator family.")
     parser.add_argument("--highres-per-class", type=int, default=10_000)
     parser.add_argument("--cifake-per-class", type=int, default=0, help="Optional low-resolution CIFAKE stress samples; excluded by default.")

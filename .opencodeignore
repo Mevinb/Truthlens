@@ -2,10 +2,9 @@
 # This stops git from trying to index hundreds of thousands of dataset images
 # which was causing 100% CPU usage on opencode's snapshot worker.
 
-# ── Dataset images (the main offender: ~350k files, 3.7 GB) ──────────────────
-dataset/
-dataset_*/
-dataset_architectures/
+# ── Dataset images (large/binary) ───────────────────────────────────────────
+datasets/*
+!datasets/README.md
 
 # ── ML model weights & binaries ──────────────────────────────────────────────
 models/

@@ -85,6 +85,27 @@ class TestFeatureExtraction:
         assert abs(feat.sum() - 1.0) < 0.5   # loose check
 
 
+class TestNestedDatasetLayouts:
+    def test_dataset_and_feature_loader_accept_nested_class_dirs(self, tmp_path):
+        from src.preprocessing import CIFAKEDataset, build_feature_dataset
+
+        root = tmp_path / "nested"
+        for split in ("train",):
+            (root / split / "real").mkdir(parents=True)
+            (root / split / "fake" / "gpt-image-2").mkdir(parents=True)
+
+        image = np.zeros((32, 32, 3), dtype=np.uint8)
+        Image.fromarray(image).save(root / "train" / "real" / "real.png")
+        Image.fromarray(image).save(root / "train" / "fake" / "gpt-image-2" / "fake.png")
+
+        dataset = CIFAKEDataset(root / "train", split="train", img_size=32)
+        assert len(dataset) == 2
+
+        X, y = build_feature_dataset(root / "train", max_samples_per_class=10)
+        assert X.shape[0] == 2
+        assert sorted(y.tolist()) == [0, 1]
+
+
 # ─── Single Image Preprocessor Tests ─────────────────────────────────────────
 class TestSingleImagePreprocessor:
     def test_from_pil_returns_tensor(self, pil_image):
