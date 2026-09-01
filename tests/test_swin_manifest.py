@@ -29,17 +29,17 @@ def _row(path, split, sha, label="fake", source="s", gen="g"):
             "generator": gen, "architecture": "?", "sha256": sha}
 
 
-def test_dedup_keeps_highest_priority_split_copy():
-    """The same pixels in train and val must survive once, in train."""
+def test_dedup_preserves_evaluation_split_copy():
+    """A designated validation identity must not be pulled into training."""
     rows = [
         _row("a/train.png", "train", "AAA"),
-        _row("a/val.png", "val", "AAA"),          # dup of train → dropped
+        _row("a/val.png", "val", "AAA"),
         _row("b/val.png", "val", "BBB"),
     ]
     kept, stats = dedup(rows)
     by_path = {r["path"]: r for r in kept}
-    assert set(by_path) == {"a/train.png", "b/val.png"}
-    assert stats["dropped"]["val (dup of train)"] == 1
+    assert set(by_path) == {"a/val.png", "b/val.png"}
+    assert stats["dropped"]["train (dup of val)"] == 1
     assert stats["missing_sha"] == 0
 
 
@@ -54,14 +54,27 @@ def test_dedup_drops_intra_split_duplicates():
     assert stats["dropped"]["train (dup of train)"] == 1
 
 
-def test_dedup_prefers_train_over_test_and_val():
+def test_dedup_prefers_holdout_then_test_then_val_over_train():
     rows = [
         _row("test.png", "test", "AAA"),
         _row("train.png", "train", "AAA"),
         _row("val.png", "val", "AAA"),
+        _row("holdout.png", "holdout", "AAA"),
     ]
     kept, _ = dedup(rows)
-    assert [r["split"] for r in kept] == ["train"]
+    assert [r["split"] for r in kept] == ["holdout"]
+
+
+def test_dedup_reports_conflicting_labels():
+    rows = [
+        _row("real.png", "train", "AAA", label="real"),
+        _row("fake.png", "val", "AAA", label="fake"),
+    ]
+    _, stats = dedup(rows)
+    assert stats["conflicting_labels"] == [{
+        "sha256": "AAA", "labels": ["fake", "real"],
+        "paths": ["real.png", "fake.png"],
+    }]
 
 
 def test_rows_without_sha_are_counted_not_silently_merged():
@@ -125,6 +138,6 @@ def test_builder_would_exit_nonzero_on_leak(tmp_path, capsys):
 # ─── split ordering invariant ─────────────────────────────────────────────────
 def test_split_priority_ordering_is_consistent():
     from dataset.build_swin_union_manifest import SPLIT_PRIORITY
-    assert SPLIT_PRIORITY["train"] < SPLIT_PRIORITY["val"]
-    assert SPLIT_PRIORITY["val"] < SPLIT_PRIORITY["test"]
-    assert SPLIT_PRIORITY["test"] < SPLIT_PRIORITY["holdout"]
+    assert SPLIT_PRIORITY["holdout"] < SPLIT_PRIORITY["test"]
+    assert SPLIT_PRIORITY["test"] < SPLIT_PRIORITY["val"]
+    assert SPLIT_PRIORITY["val"] < SPLIT_PRIORITY["train"]

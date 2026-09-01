@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Ensure project root is in sys.path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import io
 import cv2
@@ -741,6 +742,159 @@ class EnsemblePredictor:
         return result
 
 
+class SwinPredictor:
+    """SwinV2-Tiny fine-tuned on the unified ~275K-image union corpus.
+
+    Uses the exact eval path the model was trained/validated with (square
+    resize + fixed-quality recompress + ImageNet normalisation, see
+    ``src/train_swin._eval_transform``), so the app reports what
+    ``src/eval_swin.py`` measures. Verdict is the same contract as the other
+    predictors: ``prediction`` / ``confidence`` / ``probabilities``.
+
+    The FAKE decision is taken at :attr:`THRESHOLD` rather than by argmax.
+    Argmax (an implicit 0.5) is well calibrated on the manifest's own val
+    split — 3.3% false alarms on reals — but on independent web photographs
+    it flags 42% of real images as AI-generated, frequently at 0.97+. The
+    softmax is badly overconfident off-distribution, so the boundary is moved
+    to where the false-alarm rate on genuine photos becomes defensible.
+    """
+
+    # Chosen on the manifest val split (n=10,000) *and* the independent
+    # internet tier (n=351), because the second is what uploads look like:
+    #
+    #   thr    in-dist real / fake      wild real / fake
+    #   0.50      0.967 / 0.963          0.577 / 0.918   <- argmax, 71 false alarms
+    #   0.90      0.989 / 0.919          0.786 / 0.874   <- served, 36 false alarms
+    #
+    # 0.90 halves the false alarms on real web photos and *raises* in-dist
+    # real accuracy, for ~4pp of fake recall. Trading recall for precision on
+    # the REAL class is the right direction for a tool whose failure mode is
+    # calling someone's own photograph a fake.
+    THRESHOLD = 0.90
+
+    # Scores between these bounds are reported as inconclusive rather than
+    # dressed up as a verdict. On the wild tier this abstains on ~31% of
+    # images and lifts accuracy on the rest from 0.832 to 0.876 (real 0.809,
+    # fake 0.919); in-distribution it abstains on ~12% at 0.980 selective
+    # accuracy. The band brackets the threshold, so a confident FAKE needs
+    # >=0.97 and a confident REAL needs <=0.30.
+    ABSTAIN_LOW = 0.30
+    ABSTAIN_HIGH = 0.97
+
+    def __init__(self, cfg: Config, checkpoint_name: Optional[str] = None) -> None:
+        import torch
+        from src.train_swin import _eval_transform, build_model as build_swin
+
+        self.cfg = cfg
+        self.device = get_device()
+        self.checkpoint_meta: Dict[str, Any] = {}
+
+        swin_name = checkpoint_name or getattr(cfg, "swin_model_name", "swin_v2_tiny_512_hardstyles.pth")
+        p = Path(swin_name)
+        candidates = [
+            cfg.models_dir / p,
+            cfg.models_dir / "swin_epochs" / p.name,
+            PROJECT_ROOT / "models" / p,
+            PROJECT_ROOT / "models" / "swin_epochs" / p.name,
+            cfg.models_dir / "swin_v2_tiny_512.pth",
+        ]
+        ckpt_path = None
+        for c in candidates:
+            if c.exists() and c.is_file():
+                ckpt_path = c
+                break
+        if ckpt_path is None:
+            raise FileNotFoundError(
+                f"SwinV2 checkpoint not found (tried {candidates})\n"
+                "Train it first:  python src/train_swin.py"
+            )
+        # The checkpoint is rewritten while training is still running, so a
+        # partially-written file is a transient, retryable state rather than a
+        # corruption. torch.save is not atomic; the train loop's every-epoch
+        # write can land mid-read here.
+        checkpoint = None
+        for attempt in range(3):
+            try:
+                checkpoint = torch.load(ckpt_path, map_location=self.device,
+                                        weights_only=False)
+                break
+            except Exception as exc:                                   # noqa: BLE001
+                if attempt == 2:
+                    raise
+                logger.warning("SwinV2 checkpoint read failed; retrying: %s", exc)
+                time.sleep(1.0)
+
+        class_names = tuple(checkpoint.get(
+            "class_names", checkpoint.get("config", {}).get("class_names", ())))
+        if class_names and class_names != self.cfg.class_names:
+            raise ValueError(
+                f"SwinV2 checkpoint class order {class_names} does not match "
+                f"expected order {self.cfg.class_names}."
+            )
+        self.img_size = int(checkpoint.get("img_size", 512))
+        self.threshold = float(checkpoint.get("decision_threshold",
+                                             checkpoint.get("threshold",
+                                                            checkpoint.get("calibrated_threshold",
+                                                                           self.THRESHOLD))))
+        self.transform = _eval_transform(self.img_size)
+        model = build_swin(pretrained=False).to(self.device)
+        model.load_state_dict(checkpoint["model_state"])
+        model.eval()
+        self.model = model
+        self.checkpoint_meta = {
+            "file": ckpt_path.name,
+            "epoch": checkpoint.get("epoch"),
+            "val_acc": checkpoint.get("val_acc"),
+            "val_loss": checkpoint.get("val_loss"),
+            "device": str(self.device),
+            "classes": list(class_names or self.cfg.class_names),
+            "img_size": self.img_size,
+            "threshold": self.threshold,
+        }
+        logger.info("  SwinV2 loaded — epoch %s (val acc %.2f%%)",
+                    checkpoint.get("epoch", "?"), checkpoint.get("val_acc", 0.0))
+
+    def predict(self, image_source) -> Dict[str, Any]:
+        import torch
+
+        pil = _as_pil(image_source)
+        if pil is None:
+            raise TypeError(f"Unsupported image source: {type(image_source)!r}")
+
+        x = self.transform(pil).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            logits = self.model(x)
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+        raw_p_fake = float(probs[1])
+
+        # Decide at the served threshold, then rescale the odds so the
+        # reported confidence agrees with the verdict. Without the shift a
+        # p_fake of 0.85 would be called REAL while displaying "85% FAKE".
+        p_fake = ClipPredictor._threshold_adjusted_probability(
+            raw_p_fake, self.threshold)
+        shifted = np.array([1.0 - p_fake, p_fake], dtype=np.float64)
+        pred_idx = int(p_fake >= 0.5)
+
+        result = CNNPredictor._build_result(
+            pred_idx=pred_idx,
+            probs=shifted,
+            confidence=float(shifted[pred_idx]) * 100.0,
+        )
+        result["model_name"] = "swin_v2_tiny"
+        result["img_size"] = self.img_size
+        result["raw_probability_fake"] = round(raw_p_fake * 100.0, 2)
+        result["decision_threshold"] = round(float(self.threshold) * 100.0, 2)
+        # Off-distribution the softmax is overconfident in both directions, so
+        # mid-range scores are routed to review instead of asserted.
+        result["review_recommended"] = bool(
+            self.ABSTAIN_LOW < raw_p_fake < self.ABSTAIN_HIGH)
+        result["reliability"] = (
+            "inconclusive" if result["review_recommended"] else "high"
+        )
+        result.update(forensic_metrics(pil))
+        return result
+
+
 class ClipPredictor:
     """Frozen CLIP ViT-L/14 with retrained calibrated linear heads."""
 
@@ -828,8 +982,82 @@ class ClipPredictor:
 _PREDICTOR_CACHE: Dict[Tuple[str, str], Any] = {}
 
 
+def _predictor_cache_key(model_type: str, cfg: Config) -> Tuple[str, str]:
+    """Return a cache key that changes when the model files change.
+
+    A path-only key is subtly wrong for a long-running Streamlit process:
+    retraining can replace a checkpoint in place while the old predictor stays
+    cached forever.  Include the file size and nanosecond mtime so a retrained
+    model is picked up without changing any scoring logic.  Missing files are
+    still represented deterministically; the loader will raise the useful
+    ``FileNotFoundError`` afterwards.
+    """
+    if model_type in ("clip", "clip_linear"):
+        paths = (cfg.models_dir / "clip_linear" / "heads.joblib",)
+    elif model_type in ("swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep6", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep2", "swin_newdata_ep1"):
+        target_map = {
+            "swin_hardstyles": "swin_v2_tiny_512_hardstyles.pth",
+            "swin_ep9": "swin_epochs/swin_v2_512_ep009.pth",
+            "swin_improved_ep6": "swin_epochs/swin_v2_512_improved_ep006.pth",
+            "swin_improved_ep5": "swin_epochs/swin_v2_512_improved_ep005.pth",
+            "swin_improved_ep3": "swin_epochs/swin_v2_512_improved_ep003.pth",
+            "swin_improved_ep4": "swin_epochs/swin_v2_512_improved_ep004.pth",
+            "swin_improved_ep2": "swin_epochs/swin_v2_512_improved_ep002.pth",
+            "swin_newdata": "swin_v2_tiny_512_newdata.pth",
+            "swin_newdata_ep3": "swin_epochs/swin_v2_512_newdata_ep003.pth",
+            "swin_newdata_ep4": "swin_epochs/swin_v2_512_newdata_ep004.pth",
+            "swin_newdata_ep2": "swin_epochs/swin_v2_512_newdata_ep002.pth",
+            "swin_newdata_ep1": "swin_epochs/swin_v2_512_newdata_ep001.pth",
+        }
+        target_name = target_map.get(model_type, getattr(cfg, "swin_model_name", "swin_epochs/swin_v2_512_improved_ep006.pth"))
+        p = Path(target_name)
+        candidates = [
+            cfg.models_dir / p,
+            cfg.models_dir / "swin_epochs" / p.name,
+            PROJECT_ROOT / "models" / p,
+            PROJECT_ROOT / "models" / "swin_epochs" / p.name,
+            cfg.models_dir / "swin_epochs" / "swin_v2_512_improved_ep006.pth",
+            cfg.models_dir / "swin_v2_tiny_512_improved.pth",
+            cfg.models_dir / "swin_v2_tiny_512_hardstyles.pth",
+            cfg.models_dir / "swin_v2_tiny_512.pth",
+        ]
+        chosen = candidates[-1]
+        for c in candidates:
+            if c.exists() and c.is_file():
+                chosen = c
+                break
+        paths = (chosen,)
+    elif model_type == "resnet18":
+        paths = (cfg.models_dir / cfg.cnn_model_name,)
+    elif model_type == "ensemble":
+        paths = (
+            cfg.models_dir / cfg.cnn_model_name,
+            cfg.models_dir / "svm.pkl",
+            cfg.models_dir / "random_forest.pkl",
+        )
+    else:
+        model_names = {
+            "logistic_regression": "logistic_regression.pkl",
+            "random_forest": "random_forest.pkl",
+            "svm": "svm.pkl",
+            "knn": "k-nn.pkl",
+            "decision_tree": "decision_tree.pkl",
+            "naive_bayes": "naive_bayes.pkl",
+        }
+        paths = (cfg.models_dir / model_names.get(model_type, model_type),)
+
+    fingerprints = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            fingerprints.append(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}")
+        except OSError:
+            fingerprints.append(f"{path.resolve()}:missing")
+    return model_type, "|".join(fingerprints)
+
+
 def _get_predictor(model_type: str, cfg: Config):
-    key = (model_type, str(cfg.models_dir / cfg.cnn_model_name))
+    key = _predictor_cache_key(model_type, cfg)
     if key not in _PREDICTOR_CACHE:
         if model_type in ("clip", "clip_linear"):
             _PREDICTOR_CACHE[key] = ClipPredictor(cfg)
@@ -837,6 +1065,32 @@ def _get_predictor(model_type: str, cfg: Config):
             _PREDICTOR_CACHE[key] = EnsemblePredictor(cfg)
         elif model_type == "resnet18":
             _PREDICTOR_CACHE[key] = CNNPredictor(cfg)
+        elif model_type == "swin_improved_ep6":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep006.pth")
+        elif model_type == "swin_improved_ep5":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep005.pth")
+        elif model_type == "swin_improved_ep3":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep003.pth")
+        elif model_type == "swin_improved_ep4":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep004.pth")
+        elif model_type == "swin_improved_ep2":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep002.pth")
+        elif model_type == "swin_newdata_ep3":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_newdata_ep003.pth")
+        elif model_type == "swin_newdata_ep4":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_newdata_ep004.pth")
+        elif model_type == "swin_newdata_ep2":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_newdata_ep002.pth")
+        elif model_type == "swin_newdata_ep1":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_newdata_ep001.pth")
+        elif model_type == "swin_newdata":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_v2_tiny_512_newdata.pth")
+        elif model_type == "swin_hardstyles":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_v2_tiny_512_hardstyles.pth")
+        elif model_type == "swin_ep9":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_ep009.pth")
+        elif model_type == "swin":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg)
         else:
             _PREDICTOR_CACHE[key] = ClassicalPredictor(model_type, cfg)
     return _PREDICTOR_CACHE[key]
@@ -894,6 +1148,10 @@ def predict_image(
             result, heatmap = predictor.predict_with_gradcam(model_source)
         else:
             result = predictor.predict(model_source)
+    elif model_type in ("swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep6", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep2", "swin_newdata_ep1"):
+        # SwinV2 is a CNN but has no layer3/layer4 hooks, so Grad-CAM is not
+        # wired up for it — the verdict is produced by predict() alone.
+        result = _get_predictor(model_type, cfg).predict(model_source)
     else:
         result = _get_predictor(model_type, cfg).predict(model_source)
         result.update(forensic_metrics(model_source))
@@ -915,7 +1173,7 @@ def main():
     parser.add_argument("--image",   required=True, help="Path to input image.")
     parser.add_argument(
         "--model", default="clip",
-        choices=["clip", "resnet18", "logistic_regression", "decision_tree",
+        choices=["clip", "resnet18", "swin", "logistic_regression", "decision_tree",
                  "random_forest", "svm", "knn", "naive_bayes"],
         help="Model to use for prediction.",
     )

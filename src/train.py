@@ -13,7 +13,8 @@ Features:
   • Early stopping
   • Cosine annealing LR scheduler
   • TensorBoard logging
-  • Best-checkpoint saving
+  • Best-checkpoint saving, plus a per-epoch weight archive under
+    models/cnn_epochs/ so no epoch's weights are ever overwritten away
 
 Usage:
     python src/train.py
@@ -293,6 +294,30 @@ def train(cfg: Config, initial_checkpoint: Path | None = None) -> dict:
                 best_ckpt,
             )
             logger.info(f"  ✔ Best checkpoint saved → {best_ckpt.name}")
+
+        # Archive every epoch's weights. The best file above is overwritten
+        # whenever val loss improves, so without this the only surviving
+        # artifact is whichever epoch happened to win — no second-best to
+        # fall back to and nothing to compare epochs with after the fact.
+        try:
+            archive_dir = cfg.models_dir / "cnn_epochs"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "epoch":   epoch,
+                    "model_state": model.state_dict(),
+                    "val_loss":    val_loss,
+                    "val_acc":     val_acc,
+                    "class_names": cfg.class_names,
+                    "config": {
+                        k: (str(v) if isinstance(v, Path) else v)
+                        for k, v in cfg.__dict__.items()
+                    },
+                },
+                archive_dir / f"{Path(cfg.cnn_model_name).stem}_ep{epoch:02d}.pth",
+            )
+        except OSError as exc:
+            logger.warning(f"  Could not archive epoch {epoch} weights: {exc}")
 
         # Early stopping
         if stopper(val_loss):

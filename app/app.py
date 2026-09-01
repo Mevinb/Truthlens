@@ -176,9 +176,9 @@ def render_sidebar() -> Dict[str, Any]:
             options=list(MODEL_OPTIONS),
             index=0,
             help=(
-                "The retrained CLIP detector is the default and performs much "
-                "better than the old ResNet18 on unseen generators and source "
-                "pipelines. The classical models are kept only for comparison."
+                "The SwinV2-Tiny transformer fine-tuned on the unified union "
+                "corpus is the default. The retrained CLIP detector is kept for "
+                "comparison, and the classical models only for reference."
             ),
         )
         model_type = MODEL_OPTIONS[display]
@@ -187,7 +187,7 @@ def render_sidebar() -> Dict[str, Any]:
         with_gradcam = st.toggle(
             "Grad-CAM heatmap",
             value=True,
-            help="CNN only. Adds one backward pass per image.",
+            help="ResNet18 only — SwinV2 has no layer3/layer4 hooks for it.",
             disabled=not is_cnn,
         )
 
@@ -248,7 +248,7 @@ def render_sidebar() -> Dict[str, Any]:
 
         # Which weights are actually loaded — surfaced so a stale or unexpected
         # checkpoint is visible rather than implied by an accuracy figure.
-        prov = checkpoint_provenance()
+        prov = checkpoint_provenance(model_type)
         if prov:
             st.markdown("<hr>", unsafe_allow_html=True)
             st.markdown(T.eyebrow("loaded checkpoint"), unsafe_allow_html=True)
@@ -387,12 +387,16 @@ def render_verdict(item: Dict[str, Any], result: Dict[str, Any],
         st.markdown(T.note(tier_note), unsafe_allow_html=True)
 
     if result.get("review_recommended"):
+        why = (
+            "the four CLIP views disagree"
+            if settings["model_type"] == "clip"
+            else "the score is not decisive enough off-distribution"
+        )
         st.markdown(
             T.note(
                 "<b>Inconclusive — manual review recommended.</b> The calibrated "
-                "score is close to the decision boundary or the four CLIP views "
-                "disagree. This is safer than presenting a forced binary answer "
-                "as reliable evidence.",
+                f"score is close to the decision boundary or {why}. This is safer "
+                "than presenting a forced binary answer as reliable evidence.",
                 "caution",
             ),
             unsafe_allow_html=True,

@@ -33,24 +33,50 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # selector listed three variants that loaded the same weights while quoting
 # three different accuracies.
 MODEL_OPTIONS: Dict[str, str] = {
-    "CLIP ViT-L/14 (retrained)":  "clip",
-    "ResNet18 (CNN)":              "resnet18",
-    "ResNet18 + advisory signals": "ensemble",
-    "Logistic Regression":         "logistic_regression",
-    "Random Forest":               "random_forest",
-    "SVM (RBF kernel)":            "svm",
-    "k-NN":                        "knn",
-    "Decision Tree":               "decision_tree",
-    "Naive Bayes":                 "naive_bayes",
+    "SwinV2-Tiny (Improved Ep 6 - Benchmark Champion) 👑": "swin_improved_ep6",
+    "SwinV2-Tiny (Improved Ep 5 - Lowest Val Loss) ⚡":    "swin_improved_ep5",
+    "SwinV2-Tiny (Improved Ep 3 - Wild Winner) 🌟":       "swin_improved_ep3",
+    "SwinV2-Tiny (Improved Ep 4 - Fake Hunter) 🎯":       "swin_improved_ep4",
+    "SwinV2-Tiny (Hard Styles) 🏆":                       "swin_hardstyles",
+    "SwinV2-Tiny (Epoch 9) 🥈":                           "swin_ep9",
+    "CLIP ViT-L/14 (retrained)":                          "clip",
+    "ResNet18 (CNN)":                                     "resnet18",
+    "ResNet18 + advisory signals":                        "ensemble",
+    "Logistic Regression":                                "logistic_regression",
+    "Random Forest":                                      "random_forest",
+    "SVM (RBF kernel)":                                   "svm",
+    "k-NN":                                               "knn",
+    "Decision Tree":                                      "decision_tree",
+    "Naive Bayes":                                        "naive_bayes",
 }
 
-CNN_TYPES = ("clip", "resnet18", "ensemble")
+CNN_TYPES = ("clip", "resnet18", "ensemble", "swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep6", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep1", "swin_newdata_ep2")
 GRADCAM_TYPES = ("resnet18", "ensemble")
 
 # model_type → key inside results/metrics/benchmark_test_split.json
 _BENCH_KEY = {"resnet18": "resnet18_tta", "ensemble": "resnet18_tta"}
 
 MODEL_BLURB: Dict[str, str] = {
+    "swin_improved_ep6":   "SwinV2-Tiny (Epoch 6 Improved Run — Overall Benchmark Champion). "
+                           "Highest Holdout AUC (0.9415), highest Union AUC (0.9834), 97.00% Real accuracy on test split, "
+                           "and 85.07% recall @ 5% FPR on holdout. Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
+    "swin_improved_ep5":   "SwinV2-Tiny (Epoch 5 Improved Run — Lowest Val Loss). "
+                           "Lowest validation loss on 54K union split (0.1920), 92.80% balanced accuracy on test split "
+                           "(93.00% real acc, 92.60% fake recall). Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
+    "swin_improved_ep3":   "SwinV2-Tiny (Epoch 3 Improved Run). Best generalizer on independent Internet Wild photos "
+                           "(85.93% balanced accuracy, 96.60% real accuracy on union test). Trained with anti-shortcut "
+                           "augmentations and calibrated threshold for zero real-photo false alarms. No Grad-CAM.",
+    "swin_improved_ep4":   "SwinV2-Tiny (Epoch 4 Improved Run). Aggressive AI fake hunter "
+                           "(98.80% fake recall, 0.9750 AUC on union test, 82.71% recall @ 5% FPR on holdout). "
+                           "Trained with anti-shortcut augmentations and calibrated threshold. No Grad-CAM.",
+    "swin_hardstyles":     "SwinV2-Tiny fine-tuned with hard generator styles (Rank #1 benchmark winner). "
+                           "Highest generalization across Holdout (0.9418 AUC) and Union Test (0.9691 AUC), "
+                           "with 49% recall on pristine GPT-Image-2. Served at P(FAKE) ≥ 0.90 with selective "
+                           "abstain band. No Grad-CAM.",
+    "swin_ep9":            "SwinV2-Tiny transformer (Epoch 9 union checkpoint, Rank #2 benchmark runner-up). "
+                           "Best real-world accuracy on uncurated web photos (87.69% Internet Wild balanced acc, "
+                           "93.14% holdout real acc). Served at P(FAKE) ≥ 0.90 threshold. No Grad-CAM.",
+    "swin":                "SwinV2-Tiny transformer fine-tuned on hard generator styles (Rank #1).",
     "clip":                "Frozen CLIP ViT-L/14 with three native-resolution "
                            "views, one whole-frame view, and retrained calibrated "
                            "linear heads. It is "
@@ -89,10 +115,13 @@ FORENSIC_REFERENCE = {
 # ─── Config / predictors ─────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def resolve_config():
-    """Config pointed at whichever CNN checkpoint is actually on disk."""
-    from src.utils import Config, resolve_cnn_checkpoint
+    """Config pointed at whichever CNN and Swin checkpoints are on disk."""
+    from src.utils import Config, resolve_cnn_checkpoint, resolve_swin_checkpoint
 
-    return resolve_cnn_checkpoint(Config())
+    cfg = Config()
+    resolve_cnn_checkpoint(cfg)
+    resolve_swin_checkpoint(cfg)
+    return cfg
 
 
 @st.cache_resource(show_spinner=False)
@@ -133,19 +162,22 @@ def run_prediction(model_type: str, img, with_gradcam: bool):
         return None, f"{type(exc).__name__}: {exc}"
 
 
-def checkpoint_provenance() -> Dict[str, Any]:
-    """Metadata for the loaded CNN weights, or ``{}`` if the CNN is unavailable.
+def checkpoint_provenance(model_type: str = "clip") -> Dict[str, Any]:
+    """Metadata for the loaded checkpoint of ``model_type``, or ``{}`` if it is
+    unavailable.
 
-    Read off the predictor rather than re-opening the 45 MB checkpoint, and
-    surfaced in the UI so a stale or unexpected checkpoint is visible instead of
-    implied by an accuracy figure.
+    Read off the predictor rather than re-opening the checkpoint, and surfaced
+    in the UI so a stale or unexpected checkpoint is visible instead of implied
+    by an accuracy figure. ``model_type="clip"`` is the historical default and
+    is what the About page reports.
     """
     from src.predict import _get_predictor
 
     try:
-        return dict(_get_predictor("clip", resolve_config()).checkpoint_meta)
+        return dict(_get_predictor(model_type, resolve_config()).checkpoint_meta)
     except Exception as exc:                                  # noqa: BLE001
-        logger.debug("Checkpoint provenance unavailable: %s", exc)
+        logger.debug("Checkpoint provenance unavailable for %s: %s",
+                     model_type, exc)
         return {}
 
 

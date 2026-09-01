@@ -85,6 +85,7 @@ class Config:
 
     # Model filenames
     cnn_model_name:   str = "resnet18_truthlens.pth"
+    swin_model_name:  str = "swin_v2_tiny_512_hardstyles.pth"
     svm_model_name:   str = "svm_model.pkl"
     rf_model_name:    str = "rf_model.pkl"
     lr_model_name:    str = "lr_model.pkl"
@@ -173,6 +174,63 @@ def set_cnn_checkpoint(cfg: "Config", value: str) -> "Config":
         f"Checkpoint {value!r} not found. Tried:\n  {tried}\n"
         f"Available in {cfg.models_dir}: "
         + ", ".join(sorted(f.name for f in cfg.models_dir.glob("*.pth")) or ["(none)"])
+    )
+
+
+# ─── Swin checkpoint discovery ────────────────────────────────────────────────
+SWIN_CHECKPOINTS = (
+    "swin_epochs/swin_v2_512_improved_ep006.pth",
+    "swin_epochs/swin_v2_512_improved_ep005.pth",
+    "swin_v2_tiny_512_improved.pth",
+    "swin_epochs/swin_v2_512_improved_ep003.pth",
+    "swin_epochs/swin_v2_512_improved_ep004.pth",
+    "swin_epochs/swin_v2_512_improved_ep002.pth",
+    "swin_v2_tiny_512_hardstyles.pth",
+    "swin_epochs/swin_v2_512_ep009.pth",
+    "swin_epochs/swin_v2_512_ep008.pth",
+    "swin_epochs/swin_v2_512_ep011.pth",
+    "swin_epochs/swin_v2_512_ep012.pth",
+    "swin_v2_tiny_512.pth",
+    "swin_v2_tiny_512_newdata.pth",
+    "swin_epochs/swin_v2_512_newdata_ep003.pth",
+    "swin_epochs/swin_v2_512_newdata_ep004.pth",
+    "swin_epochs/swin_v2_512_newdata_ep002.pth",
+    "swin_epochs/swin_v2_512_newdata_ep001.pth",
+)
+
+
+def resolve_swin_checkpoint(cfg: "Config") -> "Config":
+    """Point ``cfg.swin_model_name`` at the best Swin checkpoint present on disk."""
+    for candidate in SWIN_CHECKPOINTS:
+        if (cfg.models_dir / candidate).exists() or (ROOT_DIR / "models" / candidate).exists():
+            cfg.swin_model_name = candidate
+            break
+    return cfg
+
+
+def set_swin_checkpoint(cfg: "Config", value: str) -> "Config":
+    """Point ``cfg`` at an explicitly requested Swin checkpoint."""
+    p = Path(value).expanduser()
+    candidates = [p] if p.is_absolute() else [
+        cfg.models_dir / p,
+        cfg.models_dir / "swin_epochs" / p.name,
+        ROOT_DIR / p,
+        ROOT_DIR / "models" / p,
+        ROOT_DIR / "models" / "swin_epochs" / p.name,
+        cfg.models_dir / p.name,
+    ]
+    for cand in candidates:
+        if cand.exists() and cand.is_file():
+            if cand.is_relative_to(cfg.models_dir):
+                cfg.swin_model_name = str(cand.relative_to(cfg.models_dir))
+            else:
+                cfg.swin_model_name = str(cand)
+            return cfg
+    tried = "\n  ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        f"Swin checkpoint {value!r} not found. Tried:\n  {tried}\n"
+        f"Available under models/: "
+        + ", ".join(sorted(str(f.relative_to(cfg.models_dir)) for f in cfg.models_dir.glob("**/*.pth")) or ["(none)"])
     )
 
 

@@ -1,4 +1,4 @@
-l# Python Cache & Testing
+# Python Cache & Testing
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,7 +24,48 @@ venv_truthlens/
 .ipynb_checkpoints
 *.ipynb_checkpoints/
 
-# Datasets (all variants and extracts)
+# ── FAIL-SAFE: NEVER PUSH IMAGES / MEDIA AT ANY COST ───────────────────────
+# Even if someone runs `git add -f`, these patterns force a conscious review.
+# Covers all case variants and nested directories.
+*.png
+*.PNG
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+*.webp
+*.WEBP
+*.bmp
+*.BMP
+*.gif
+*.GIF
+*.tiff
+*.TIFF
+*.tif
+*.TIF
+*.heic
+*.HEIC
+*.heif
+*.HEIF
+*.avif
+*.AVIF
+*.psd
+*.PSD
+*.svg
+*.SVG
+*.ico
+*.ICO
+# Video (also training data)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+# Allow tracked docs images if ever needed — keep blocked by default
+# !app/assets/**/*.png
+# !docs/**/*.png
+
+# Datasets (all variants and extracts) — redundant with above but explicit
 datasets/*
 !datasets/README.md
 
@@ -37,16 +78,47 @@ scratch_demo/
 *.zip
 *.tar
 *.gz
+*.bak
+*.backup
+*.bak.*
+*.pth.bak
 
-# Model weights & binaries
+# ── Model weights & binaries — RECURSIVE (was models/*.pth leaving subdirs exposed) ──
+# Block every weight format at any depth. Previously only top-level models/*.pth
+# was ignored, so models/swin_epochs/*.pth (1.6 GB) was still untracked & pushable.
+models/**/*.pth
+models/**/*.pkl
+models/**/*.h5
+models/**/*.pt
+models/**/*.onnx
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.ckpt
+models/**/*.bak
+models/**/*.pth.bak
+models/**/*.backup
+# Explicit directory block for epoch archives (belt-and-suspenders)
+models/swin_epochs/
+# Keep only the gitkeep; clip heads are tiny (16K) and intentionally versioned:
+!models/.gitkeep
+# Legacy top-level globs kept for clarity
 models/*.pth
 models/*.pkl
 models/*.h5
 models/*.pt
 models/*.onnx
+models/*.bak
+models/*.pth.bak
 !models/.gitkeep
 
-# Results & Logs
+# ── Scratch / ad-hoc experiments — never push ───────────────────────────────
+scratch/
+scratch/**
+scratch_demo/
+__pycache__/
+*.py[cod]
+
+# Results & Logs — also contain renders that look like images
 results/metrics/*
 results/plots/*
 results/gradcam/*
@@ -54,6 +126,10 @@ results/logs/*
 !results/.gitkeep
 runs/
 *.log
+
+# Features cache (large numpy, derived from datasets)
+features/**/*.npy
+features/**/*.npz
 
 # IDE & OS
 .vscode/
@@ -63,8 +139,21 @@ runs/
 .DS_Store
 Thumbs.db
 
-# Credentials & API Keys
+# ── Credentials & API Keys — zero-tolerance ─────────────────────────────────
 .env
 *.env
+.env.*
+!.env.example
 .kaggle/
 kaggle.json
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+*_secret*.json
+*_token*.json
+.huggingface/
+hf_token*
+**/.hf_token
+**/token.txt
