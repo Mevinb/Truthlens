@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+.turbo/
+.vercel/
+.npm-cache/
+*.log
+*.tsbuildinfo
+.env
+.env.*
+.env*
+__pycache__/
+*.pyc
+results/

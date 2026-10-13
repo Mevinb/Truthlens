@@ -366,19 +366,12 @@ def render_verdict(item: Dict[str, Any], result: Dict[str, Any],
                     f"{ts['fake_accuracy']:.1f}% of AI images in that tier."
                 )
 
-    inconclusive = bool(result.get("review_recommended"))
     st.markdown(
         T.verdict(
-            "INCONCLUSIVE" if inconclusive
-            else ("AI-GENERATED" if is_fake else "REAL PHOTOGRAPH"),
+            "AI-GENERATED" if is_fake else "REAL PHOTOGRAPH",
             is_fake,
-            (
-                f"Underlying score leans <b>{pred}</b> at {conf:.1f}%, but this "
-                "image is outside the detector's reliable decision region."
-                if inconclusive else
-                f"<b>{conf:.1f}%</b> confidence · {settings['display']} · {reliability}"
-            ),
-            uncertain=inconclusive,
+            f"<b>{conf:.1f}%</b> confidence · {settings['display']} · {reliability}",
+            uncertain=False,
         ),
         unsafe_allow_html=True,
     )
@@ -475,7 +468,7 @@ def render_verdict(item: Dict[str, Any], result: Dict[str, Any],
             file_name=f"truthlens_{digest(item['bytes'])}.json",
             mime="application/json",
             width="stretch",
-            key=f"dl_{digest(item['bytes'])}_{settings['model_type']}",
+            key=f"dl_{digest(item['bytes'])}_{hashlib.sha1(str(item.get('name', '')).encode('utf-8', 'ignore')).hexdigest()[:8]}_{settings['model_type']}_{id(item)}",
         )
 
     if "ensemble_votes" in result:
@@ -736,14 +729,26 @@ def render_evidence(item: Dict[str, Any], result: Dict[str, Any],
 def render_batch_summary(rows: List[Dict[str, Any]]) -> None:
     import pandas as pd
 
-    st.markdown(T.eyebrow(f"batch summary — {len(rows)} images"), unsafe_allow_html=True)
+    total = len(rows)
+    reals = sum(1 for r in rows if r["Verdict"] == "REAL")
+    fakes = sum(1 for r in rows if r["Verdict"] == "FAKE")
+
+    st.markdown(T.eyebrow(f"batch summary — {total} images"), unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Scanned", total)
+    c2.metric("Real Photos", reals)
+    c3.metric("AI Fakes", fakes)
+
     df = pd.DataFrame(rows)
     st.dataframe(
         df, width="stretch", hide_index=True,
         column_config={
-            "Confidence": st.column_config.NumberColumn(format="%.1f%%"),
+            "File": st.column_config.TextColumn("File", width="medium"),
+            "Verdict": st.column_config.TextColumn("Verdict", width="small"),
+            "Confidence": st.column_config.NumberColumn("Confidence", format="%.1f%%"),
             "P(fake)": st.column_config.ProgressColumn(
-                format="%.1f%%", min_value=0, max_value=100
+                "P(fake)", format="%.1f%%", min_value=0, max_value=100
             ),
         },
     )
@@ -815,17 +820,9 @@ def render_detect(settings: Dict[str, Any]) -> None:
         scored.append((item, result, heatmap))
         summary.append({
             "File":       item["name"],
-            "Verdict":    (
-                "INCONCLUSIVE" if result.get("review_recommended")
-                else result["prediction"]
-            ),
-            "Model lean": result["prediction"],
+            "Verdict":    result["prediction"],
             "Confidence": float(result["confidence"]),
             "P(fake)":    float(result["probabilities"]["FAKE"]),
-            "Provenance findings": len(
-                (result.get("provenance_analysis") or {}).get("signals") or []
-            ),
-            "Truth":      item.get("truth") or "—",
         })
         if progress:
             progress.progress(i / len(items), text=f"Analysing… {i}/{len(items)}")

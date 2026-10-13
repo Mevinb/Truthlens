@@ -179,7 +179,10 @@ def set_cnn_checkpoint(cfg: "Config", value: str) -> "Config":
 
 # ─── Swin checkpoint discovery ────────────────────────────────────────────────
 SWIN_CHECKPOINTS = (
+    "swin_epochs/swin_v2_512_improved_ep009.pth",
+    "swin_epochs/swin_v2_512_improved_ep007.pth",
     "swin_epochs/swin_v2_512_improved_ep006.pth",
+    "swin_epochs/swin_v2_512_improved_ep008.pth",
     "swin_epochs/swin_v2_512_improved_ep005.pth",
     "swin_v2_tiny_512_improved.pth",
     "swin_epochs/swin_v2_512_improved_ep003.pth",

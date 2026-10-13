@@ -832,10 +832,17 @@ class SwinPredictor:
                 f"expected order {self.cfg.class_names}."
             )
         self.img_size = int(checkpoint.get("img_size", 512))
-        self.threshold = float(checkpoint.get("decision_threshold",
-                                             checkpoint.get("threshold",
-                                                            checkpoint.get("calibrated_threshold",
-                                                                           self.THRESHOLD))))
+        # Checkpoints often contain validation evaluation metrics such as
+        # "threshold" or "calibrated_threshold" (which record threshold_5fpr, e.g. ~0.085).
+        # Using that in-distribution validation metric as an operational decision boundary
+        # causes severe false alarms on real photos (treating anything over 8.5% as fake).
+        # We only use an explicit "decision_threshold" if specified and conservative (>= 0.50);
+        # otherwise we use the model class's robust operational threshold (self.THRESHOLD = 0.90).
+        dt = checkpoint.get("decision_threshold")
+        if dt is not None and float(dt) >= 0.5:
+            self.threshold = float(dt)
+        else:
+            self.threshold = float(self.THRESHOLD)
         self.transform = _eval_transform(self.img_size)
         model = build_swin(pretrained=False).to(self.device)
         model.load_state_dict(checkpoint["model_state"])
@@ -854,7 +861,7 @@ class SwinPredictor:
         logger.info("  SwinV2 loaded — epoch %s (val acc %.2f%%)",
                     checkpoint.get("epoch", "?"), checkpoint.get("val_acc", 0.0))
 
-    def predict(self, image_source) -> Dict[str, Any]:
+    def predict(self, image_source, natural_mode: bool = False) -> Dict[str, Any]:
         import torch
 
         pil = _as_pil(image_source)
@@ -866,6 +873,23 @@ class SwinPredictor:
             logits = self.model(x)
         probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
         raw_p_fake = float(probs[1])
+
+        if natural_mode:
+            pred_idx = int(raw_p_fake >= 0.50)
+            natural_probs = np.array([1.0 - raw_p_fake, raw_p_fake], dtype=np.float64)
+            result = CNNPredictor._build_result(
+                pred_idx=pred_idx,
+                probs=natural_probs,
+                confidence=float(natural_probs[pred_idx]) * 100.0,
+            )
+            result["model_name"] = "swin_v2_tiny"
+            result["img_size"] = self.img_size
+            result["raw_probability_fake"] = round(raw_p_fake * 100.0, 2)
+            result["decision_threshold"] = 50.0
+            result["review_recommended"] = False
+            result["reliability"] = "high"
+            result.update(forensic_metrics(pil))
+            return result
 
         # Decide at the served threshold, then rescale the odds so the
         # reported confidence agrees with the verdict. Without the shift a
@@ -994,11 +1018,14 @@ def _predictor_cache_key(model_type: str, cfg: Config) -> Tuple[str, str]:
     """
     if model_type in ("clip", "clip_linear"):
         paths = (cfg.models_dir / "clip_linear" / "heads.joblib",)
-    elif model_type in ("swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep6", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep2", "swin_newdata_ep1"):
+    elif model_type in ("swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep9", "swin_improved_ep7", "swin_improved_ep6", "swin_improved_ep8", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep2", "swin_newdata_ep1"):
         target_map = {
             "swin_hardstyles": "swin_v2_tiny_512_hardstyles.pth",
             "swin_ep9": "swin_epochs/swin_v2_512_ep009.pth",
+            "swin_improved_ep9": "swin_epochs/swin_v2_512_improved_ep009.pth",
+            "swin_improved_ep7": "swin_epochs/swin_v2_512_improved_ep007.pth",
             "swin_improved_ep6": "swin_epochs/swin_v2_512_improved_ep006.pth",
+            "swin_improved_ep8": "swin_epochs/swin_v2_512_improved_ep008.pth",
             "swin_improved_ep5": "swin_epochs/swin_v2_512_improved_ep005.pth",
             "swin_improved_ep3": "swin_epochs/swin_v2_512_improved_ep003.pth",
             "swin_improved_ep4": "swin_epochs/swin_v2_512_improved_ep004.pth",
@@ -1009,13 +1036,15 @@ def _predictor_cache_key(model_type: str, cfg: Config) -> Tuple[str, str]:
             "swin_newdata_ep2": "swin_epochs/swin_v2_512_newdata_ep002.pth",
             "swin_newdata_ep1": "swin_epochs/swin_v2_512_newdata_ep001.pth",
         }
-        target_name = target_map.get(model_type, getattr(cfg, "swin_model_name", "swin_epochs/swin_v2_512_improved_ep006.pth"))
+        target_name = target_map.get(model_type, getattr(cfg, "swin_model_name", "swin_epochs/swin_v2_512_improved_ep009.pth"))
         p = Path(target_name)
         candidates = [
             cfg.models_dir / p,
             cfg.models_dir / "swin_epochs" / p.name,
             PROJECT_ROOT / "models" / p,
             PROJECT_ROOT / "models" / "swin_epochs" / p.name,
+            cfg.models_dir / "swin_epochs" / "swin_v2_512_improved_ep009.pth",
+            cfg.models_dir / "swin_epochs" / "swin_v2_512_improved_ep007.pth",
             cfg.models_dir / "swin_epochs" / "swin_v2_512_improved_ep006.pth",
             cfg.models_dir / "swin_v2_tiny_512_improved.pth",
             cfg.models_dir / "swin_v2_tiny_512_hardstyles.pth",
@@ -1065,8 +1094,14 @@ def _get_predictor(model_type: str, cfg: Config):
             _PREDICTOR_CACHE[key] = EnsemblePredictor(cfg)
         elif model_type == "resnet18":
             _PREDICTOR_CACHE[key] = CNNPredictor(cfg)
+        elif model_type == "swin_improved_ep9":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep009.pth")
+        elif model_type == "swin_improved_ep7":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep007.pth")
         elif model_type == "swin_improved_ep6":
             _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep006.pth")
+        elif model_type == "swin_improved_ep8":
+            _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep008.pth")
         elif model_type == "swin_improved_ep5":
             _PREDICTOR_CACHE[key] = SwinPredictor(cfg, checkpoint_name="swin_epochs/swin_v2_512_improved_ep005.pth")
         elif model_type == "swin_improved_ep3":
@@ -1148,10 +1183,10 @@ def predict_image(
             result, heatmap = predictor.predict_with_gradcam(model_source)
         else:
             result = predictor.predict(model_source)
-    elif model_type in ("swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep6", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep2", "swin_newdata_ep1"):
+    elif model_type in ("swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep9", "swin_improved_ep7", "swin_improved_ep6", "swin_improved_ep8", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep2", "swin_newdata_ep1"):
         # SwinV2 is a CNN but has no layer3/layer4 hooks, so Grad-CAM is not
         # wired up for it — the verdict is produced by predict() alone.
-        result = _get_predictor(model_type, cfg).predict(model_source)
+        result = _get_predictor(model_type, cfg).predict(model_source, natural_mode=True)
     else:
         result = _get_predictor(model_type, cfg).predict(model_source)
         result.update(forensic_metrics(model_source))

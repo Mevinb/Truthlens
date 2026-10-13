@@ -10,7 +10,11 @@ build/
 .eggs/
 .Python
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
+.coverage.*
+htmlcov/
 pip-log.txt
 pip-delete-this-directory.txt
 
@@ -139,11 +143,28 @@ features/**/*.npz
 .DS_Store
 Thumbs.db
 
+# ── Node.js & Next.js ────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.turbo/
+.vercel/
+.npm-cache/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Streamlit ────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+**/.streamlit/secrets.toml
+
 # ── Credentials & API Keys — zero-tolerance ─────────────────────────────────
 .env
 *.env
 .env.*
-!.env.example
+.env*
 .kaggle/
 kaggle.json
 *.pem

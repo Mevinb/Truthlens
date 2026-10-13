@@ -33,12 +33,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # selector listed three variants that loaded the same weights while quoting
 # three different accuracies.
 MODEL_OPTIONS: Dict[str, str] = {
-    "SwinV2-Tiny (Improved Ep 6 - Benchmark Champion) 👑": "swin_improved_ep6",
-    "SwinV2-Tiny (Improved Ep 5 - Lowest Val Loss) ⚡":    "swin_improved_ep5",
+    "SwinV2-Tiny (Improved Ep 9 - Holdout AUC Record) 👑": "swin_improved_ep9",
+    "SwinV2-Tiny (Improved Ep 6 - Union Champion) 🏆":     "swin_improved_ep6",
+    "SwinV2-Tiny (Improved Ep 7 - Lowest Val Loss) ⚡":    "swin_improved_ep7",
+    "SwinV2-Tiny (Improved Ep 8 - Fake Hunter Pro) 🎯":    "swin_improved_ep8",
     "SwinV2-Tiny (Improved Ep 3 - Wild Winner) 🌟":       "swin_improved_ep3",
-    "SwinV2-Tiny (Improved Ep 4 - Fake Hunter) 🎯":       "swin_improved_ep4",
-    "SwinV2-Tiny (Hard Styles) 🏆":                       "swin_hardstyles",
-    "SwinV2-Tiny (Epoch 9) 🥈":                           "swin_ep9",
+    "SwinV2-Tiny (Hard Styles) 🏅":                       "swin_hardstyles",
+    "SwinV2-Tiny (Epoch 9 Union) 🥈":                     "swin_ep9",
     "CLIP ViT-L/14 (retrained)":                          "clip",
     "ResNet18 (CNN)":                                     "resnet18",
     "ResNet18 + advisory signals":                        "ensemble",
@@ -50,25 +51,28 @@ MODEL_OPTIONS: Dict[str, str] = {
     "Naive Bayes":                                        "naive_bayes",
 }
 
-CNN_TYPES = ("clip", "resnet18", "ensemble", "swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep6", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep1", "swin_newdata_ep2")
+CNN_TYPES = ("clip", "resnet18", "ensemble", "swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep9", "swin_improved_ep7", "swin_improved_ep6", "swin_improved_ep8", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep1", "swin_newdata_ep2")
 GRADCAM_TYPES = ("resnet18", "ensemble")
 
 # model_type → key inside results/metrics/benchmark_test_split.json
 _BENCH_KEY = {"resnet18": "resnet18_tta", "ensemble": "resnet18_tta"}
 
 MODEL_BLURB: Dict[str, str] = {
-    "swin_improved_ep6":   "SwinV2-Tiny (Epoch 6 Improved Run — Overall Benchmark Champion). "
-                           "Highest Holdout AUC (0.9415), highest Union AUC (0.9834), 97.00% Real accuracy on test split, "
-                           "and 85.07% recall @ 5% FPR on holdout. Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
-    "swin_improved_ep5":   "SwinV2-Tiny (Epoch 5 Improved Run — Lowest Val Loss). "
-                           "Lowest validation loss on 54K union split (0.1920), 92.80% balanced accuracy on test split "
-                           "(93.00% real acc, 92.60% fake recall). Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
-    "swin_improved_ep3":   "SwinV2-Tiny (Epoch 3 Improved Run). Best generalizer on independent Internet Wild photos "
-                           "(85.93% balanced accuracy, 96.60% real accuracy on union test). Trained with anti-shortcut "
-                           "augmentations and calibrated threshold for zero real-photo false alarms. No Grad-CAM.",
-    "swin_improved_ep4":   "SwinV2-Tiny (Epoch 4 Improved Run). Aggressive AI fake hunter "
-                           "(98.80% fake recall, 0.9750 AUC on union test, 82.71% recall @ 5% FPR on holdout). "
-                           "Trained with anti-shortcut augmentations and calibrated threshold. No Grad-CAM.",
+    "swin_improved_ep9":   "SwinV2-Tiny (Epoch 9 Improved Run — All-Time Holdout AUC Record). "
+                           "Highest Holdout AUC in repository history (0.9461), highest Recall @ 5% FPR (86.64%), "
+                           "and 98.20% Real accuracy on test split. Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
+    "swin_improved_ep7":   "SwinV2-Tiny (Epoch 7 Improved Run — Lowest Validation Loss). "
+                           "Lowest validation loss on 54K union split (0.1870), 0.9427 Holdout AUC, 97.60% Real accuracy on test split, "
+                           "and 83.55% Internet Wild balanced accuracy. Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
+    "swin_improved_ep6":   "SwinV2-Tiny (Epoch 6 Improved Run — Overall Balanced Winner). "
+                           "Highest Union AUC (0.9834), 89.40% Holdout balanced accuracy (95.10% Real, 83.69% Fake), "
+                           "and 97.00% Real accuracy on test split. Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
+    "swin_improved_ep8":   "SwinV2-Tiny (Epoch 8 Improved Run — Ultra Fake Hunter). "
+                           "Peak Fake Recall on test split (97.60%, 0.9863 AUC, 94.20% recall @ 5% FPR). "
+                           "Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
+    "swin_improved_ep3":   "SwinV2-Tiny (Epoch 3 Improved Run — Wild Photo Winner). "
+                           "Best generalizer on independent Internet Wild photos (85.93% balanced accuracy, "
+                           "96.60% real accuracy on union test). Anti-shortcut trained with calibrated threshold. No Grad-CAM.",
     "swin_hardstyles":     "SwinV2-Tiny fine-tuned with hard generator styles (Rank #1 benchmark winner). "
                            "Highest generalization across Holdout (0.9418 AUC) and Union Test (0.9691 AUC), "
                            "with 49% recall on pristine GPT-Image-2. Served at P(FAKE) ≥ 0.90 with selective "

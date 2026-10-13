@@ -10,7 +10,7 @@
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-1.3%2B-F7931E?style=for-the-badge&logo=scikit-learn)](https://scikit-learn.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-**TruthLens** classifies an uploaded image as ✅ **Real** or 🤖 **AI-Generated** using a ResNet18 deep learning model and 6 classical ML algorithms. The Streamlit web app provides confidence scores, Grad-CAM heatmaps, and AI explanations.
+**TruthLens** classifies an uploaded image as ✅ **Real** or 🤖 **AI-Generated** using a retrained CLIP detector, SwinV2-Tiny checkpoint suite, ResNet18 baseline, and 6 classical ML algorithms. The Streamlit web app provides confidence scores, Grad-CAM heatmaps, and AI explanations.
 
 </div>
 
@@ -26,6 +26,7 @@
 - [Evaluation](#evaluation)
 - [Web Application](#web-application)
 - [Model Performance](#model-performance)
+- [SwinV2 Checkpoint Evaluation](#swinv2-checkpoint-evaluation)
 - [Project Structure](#project-structure)
 - [API Reference](#api-reference)
 
@@ -37,6 +38,7 @@
 |---|---|
 | 🧠 **Retrained CLIP detector** | Frozen CLIP ViT-L/14 + four calibrated linear view heads; 98.0% accuracy / 0.997 AUC on the modern same-source test and 90.8% balanced accuracy / 0.965 AUC on the quarantined holdout |
 | 🧪 **ResNet18 baseline** | Retained for comparison and Grad-CAM, but no longer the app default because it overfits source-specific rendition cues |
+| 🔭 **SwinV2-Tiny checkpoint suite** | 22 local checkpoint files audited; 18 distinct weight states. The preferred improved-run checkpoint is Epoch 6—see the documented held-out results below. |
 | 📐 **6 Classical ML Models** | LR, DT, RF, SVM, k-NN, Naive Bayes — for comparison only (51–57%, near the 50% chance line) |
 | 🔥 **Grad-CAM Heatmaps** | Visual explainability — shows where the network looked |
 | 📊 **Confidence Scores** | Real-time probability breakdown (REAL % vs FAKE %) |
@@ -70,6 +72,8 @@ TruthLens/
 │   ├── features_clip.py         ← Frozen CLIP multi-view feature extraction
 │   ├── train_head.py            ← Calibrated linear-head retraining
 │   ├── score_clip.py            ← Exact train/serve-consistent CLIP scorer
+│   ├── train_swin.py            ← SwinV2-Tiny training loop
+│   ├── eval_swin.py             ← Per-split Swin evaluation + score cache
 │   ├── train_classical.py       ← 6 classical ML models
 │   ├── evaluate.py              ← Full model evaluation + reports
 │   ├── image_forensics.py       ← Metadata, C2PA, watermark, container and LSB checks
@@ -90,6 +94,7 @@ TruthLens/
 │   └── 04_GradCAM_Demo.py
 │
 ├── diag_benchmark.py            ← Benchmarks every model + per-resolution tiers
+├── diag_swin_checkpoint_audit.py ← Strict-load and inference audit of all Swin files
 ├── diag_forensics.py            ← Measures FFT/ELA signal strength alone
 ├── diag_app_paths.py            ← Smoke-tests all 8 models × 2 images
 ├── models/                      ← Saved model checkpoints (.pth / .pkl)
@@ -256,6 +261,43 @@ python dataset/download_cifake.py --method kaggle
 
 A model trained on CIFAKE alone will not transfer to full-resolution images;
 that resolution gap is why the multi-resolution corpus exists.
+
+### ☁️ Kaggle Datasets & Uploader
+
+TruthLens datasets can be published directly to Kaggle using `scripts/upload_datasets_to_kaggle.sh` (built on `kagglehub`):
+
+```bash
+# List all registered datasets, file counts, and sizes
+./scripts/upload_datasets_to_kaggle.sh --list
+
+# Test an upload without modifying anything
+./scripts/upload_datasets_to_kaggle.sh --group core --dry-run
+
+# Upload individual datasets
+./scripts/upload_datasets_to_kaggle.sh --dataset evaluation
+./scripts/upload_datasets_to_kaggle.sh --dataset modern_v2
+
+# Upload predefined bundles (core, prepared, raw, all)
+./scripts/upload_datasets_to_kaggle.sh --group core
+```
+
+**Uploaded TruthLens Kaggle Datasets:**
+- [truthlens-raw-nano-banana](https://www.kaggle.com/datasets/mevinbenty/truthlens-raw-nano-banana) (13.83 GB)
+- [truthlens-raw-gpt-image-2](https://www.kaggle.com/datasets/mevinbenty/truthlens-raw-gpt-image-2) (3.12 GB)
+- [truthlens-modern-v2](https://www.kaggle.com/datasets/mevinbenty/truthlens-modern-v2) (9.16 GB)
+- [truthlens-multires](https://www.kaggle.com/datasets/mevinbenty/truthlens-multires) (1.79 GB)
+- [truthlens-modern-corpus](https://www.kaggle.com/datasets/mevinbenty/truthlens-modern-corpus) (1.22 GB)
+- [truthlens-prepared-legacy-archive](https://www.kaggle.com/datasets/mevinbenty/truthlens-prepared-legacy-archive) (2.76 GB)
+- [truthlens-xai-aurora-preferences](https://www.kaggle.com/datasets/mevinbenty/truthlens-xai-aurora-preferences) (3.24 GB)
+- [truthlens-hard-styles](https://www.kaggle.com/datasets/mevinbenty/truthlens-hard-styles) (564 MB)
+- [truthlens-highres-corpus](https://www.kaggle.com/datasets/mevinbenty/truthlens-highres-corpus) (442 MB)
+- [truthlens-cifake](https://www.kaggle.com/datasets/mevinbenty/truthlens-cifake) (135 MB)
+- [truthlens-swin-union](https://www.kaggle.com/datasets/mevinbenty/truthlens-swin-union) (94 MB)
+- [truthlens-evaluation](https://www.kaggle.com/datasets/mevinbenty/truthlens-evaluation) (81 MB)
+- [truthlens-corpus](https://www.kaggle.com/datasets/mevinbenty/truthlens-corpus) (41 MB)
+- [truthlens-architectures](https://www.kaggle.com/datasets/mevinbenty/truthlens-architectures) (1.2 KB)
+- [truthlens-fixtures](https://www.kaggle.com/datasets/mevinbenty/truthlens-fixtures) (17 KB)
+
 
 ---
 
@@ -535,6 +577,26 @@ python src/evaluate.py --model all --data-dir datasets/prepared/multires
 
 > Earlier revisions of this table quoted CIFAKE-era figures (ResNet18 ~95%,
 > Random Forest ~78%, SVM ~76%). Those never held on `datasets/prepared/multires`.
+
+### SwinV2 checkpoint evaluation
+
+All 22 local Swin checkpoint files were strictly loaded and exercised with a
+512×512 inference pass on September 2, 2026; 18 represent unique weight
+states. The focused Swin regression suite also passes 72/72 tests. The
+improved run’s Epoch 6 has the strongest quarantined-holdout result in its
+like-for-like benchmark (0.9415 AUC, 89.40% balanced accuracy, and 85.07%
+fake recall at 5% FPR). The random-initialized new-data run is not usable: all
+saved epochs are at 50% balanced accuracy.
+
+See [the complete SwinV2 checkpoint evaluation](docs/SWIN_MODEL_EVALUATION.md)
+for every file, aliases, exact test protocols, and the important caveat that
+the historical baseline and improved leaderboards are not directly comparable.
+
+Reproduce the compatibility audit with:
+
+```bash
+.venv/bin/python diag_swin_checkpoint_audit.py
+```
 
 ### Accuracy by resolution tier
 
