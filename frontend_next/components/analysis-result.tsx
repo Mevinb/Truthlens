@@ -108,6 +108,8 @@ export function AnalysisResult({ item }: { item: QueueItem }) {
     ...objectRows(result?.view_probabilities),
   ], [result]);
   const provenanceRows = useMemo(() => objectRows(result?.provenance_analysis), [result]);
+  const prov = result?.provenance_analysis as Record<string, unknown> | undefined;
+  const attribution = (prov?.ai_attribution ?? result?.ai_attribution) as Record<string, unknown> | undefined;
 
   if (!response || !result) return <EmptyState status={item.status} error={item.error} />;
 
@@ -162,6 +164,11 @@ export function AnalysisResult({ item }: { item: QueueItem }) {
                 {result.confidence.toFixed(1)}<span className="ml-1 text-xl text-muted">%</span>
               </p>
               <p className="mt-1 text-sm font-semibold text-muted">confidence in this verdict</p>
+              {Boolean(result.provenance_verified || attribution?.detected) && (
+                <div className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-purple-500/25 bg-purple-500/10 px-2.5 py-1 text-xs font-extrabold text-purple-700 dark:text-purple-300">
+                  <span>Verified AI Origin: {String(attribution?.provider ?? "AI Provenance")}</span>
+                </div>
+              )}
             </div>
             {review && (
               <div className="max-w-48 rounded-lg border border-warning/25 bg-warning-soft px-3 py-2.5 text-xs leading-5 text-warning">
@@ -267,6 +274,26 @@ export function AnalysisResult({ item }: { item: QueueItem }) {
             <div>
               <h3 className="text-base font-extrabold tracking-[-0.02em] text-ink">Embedded source information</h3>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">Metadata and content credentials can add context, but missing metadata does not imply an image is synthetic.</p>
+              {attribution && Boolean(attribution.detected) && (
+                <div className="mt-4 rounded-xl border border-purple-500/30 bg-purple-500/5 p-4">
+                  <div className="flex items-center gap-2 text-sm font-extrabold text-purple-700 dark:text-purple-300">
+                    <span>Verified AI Provenance: {String(attribution.provider ?? "AI")}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted">
+                    <strong className="text-ink">Watermark / Signature:</strong> {String(attribution.watermark_type ?? "N/A")}
+                  </p>
+                  {Array.isArray(attribution.evidence) && attribution.evidence.length > 0 && (
+                    <ul className="mt-2 space-y-1 text-xs text-muted">
+                      {(attribution.evidence as unknown[]).map((ev, i) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className="text-purple-500">•</span>
+                          <span>{String(ev)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
               {provenanceRows.length ? (
                 <dl className="mt-5 grid gap-x-8 sm:grid-cols-2">
                   {provenanceRows.map((row) => (

@@ -570,6 +570,20 @@ def render_evidence(item: Dict[str, Any], result: Dict[str, Any],
                 ),
                 unsafe_allow_html=True,
             )
+            attribution = prov.get("ai_attribution") or {}
+            if attribution.get("detected"):
+                provider = html.escape(str(attribution.get("provider", "AI")))
+                wm_type = html.escape(str(attribution.get("watermark_type", "Watermark")))
+                evidence_items = "<br>• ".join(html.escape(str(e)) for e in attribution.get("evidence", []))
+                st.markdown(
+                    T.note(
+                        f"<b>Verified AI Provenance: {provider}</b><br>"
+                        f"<b>Watermark Type:</b> {wm_type}<br>"
+                        f"<b>Evidence:</b><br>• {evidence_items}",
+                        "caution",
+                    ),
+                    unsafe_allow_html=True,
+                )
             if signals:
                 st.markdown(T.eyebrow("findings"), unsafe_allow_html=True)
                 for signal in signals:

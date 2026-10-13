@@ -554,6 +554,21 @@ def render_provenance(result: Dict[str, Any]) -> None:
             unsafe_allow_html=True,
         )
 
+    attribution = provenance.get("ai_attribution") or {}
+    if attribution.get("detected"):
+        prov_title = f"Verified AI Provenance: {attribution.get('provider', 'AI')}"
+        ev_text = " • ".join(attribution.get("evidence", []))
+        st.markdown(
+            T.callout(
+                f"<strong>{prov_title}</strong><br>"
+                f"Watermark Type: {attribution.get('watermark_type')}<br>"
+                f"Evidence: {ev_text}",
+                "caution",
+                allow_html=True,
+            ),
+            unsafe_allow_html=True,
+        )
+
     metadata = provenance.get("metadata") or {}
     credentials = provenance.get("content_credentials") or {}
     visible = provenance.get("visible_watermark") or {}
@@ -569,6 +584,8 @@ def render_provenance(result: Dict[str, Any]) -> None:
                 [
                     ("Format", container.get("format", "Not available")),
                     ("Dimensions", " x ".join(map(str, container.get("size", []))) or "Not available"),
+                    ("AI provider", attribution.get("provider", "Not detected")),
+                    ("Watermark type", attribution.get("watermark_type", "None")),
                     ("EXIF", "Present" if metadata.get("exif_present") else "Not found"),
                     ("XMP", "Present" if metadata.get("xmp_present") else "Not found"),
                     ("ICC profile", "Present" if container.get("has_icc_profile") else "Not found"),

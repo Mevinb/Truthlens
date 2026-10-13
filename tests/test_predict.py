@@ -311,3 +311,55 @@ class TestUtils:
         logger = get_logger("test_logger")
         assert logger is not None
         assert logger.name == "test_logger"
+
+
+class TestProvenanceIntegration:
+    def test_detect_likely_generator_uses_gemini_provenance(self):
+        from src.predict import detect_likely_generator
+        img = np.zeros((224, 224, 3), dtype=np.uint8)
+        prov = {
+            "ai_attribution": {
+                "detected": True,
+                "provider": "Google Gemini",
+                "model_name": "Imagen 3 / Gemini",
+                "confidence": 0.99,
+                "watermark_detected": True,
+                "watermark_type": "SynthID & AI Metadata",
+            }
+        }
+        result = detect_likely_generator(img, prov)
+        assert result == "Google Gemini (Imagen 3)"
+
+    def test_detect_likely_generator_uses_chatgpt_provenance(self):
+        from src.predict import detect_likely_generator
+        img = np.zeros((224, 224, 3), dtype=np.uint8)
+        prov = {
+            "ai_attribution": {
+                "detected": True,
+                "provider": "OpenAI ChatGPT",
+                "model_name": "DALL-E 3",
+                "confidence": 0.99,
+                "watermark_detected": True,
+                "watermark_type": "C2PA Content Credentials",
+            }
+        }
+        result = detect_likely_generator(img, prov)
+        assert result == "ChatGPT (DALL-E 3)"
+
+    def test_explanation_includes_verified_provenance(self):
+        from src.predict import generate_explanation
+        img = np.zeros((224, 224, 3), dtype=np.uint8)
+        pred_result = {
+            "prediction": "FAKE",
+            "confidence": 92.0,
+            "provenance_analysis": {
+                "ai_attribution": {
+                    "detected": True,
+                    "provider": "Google Gemini",
+                    "confidence": 0.99,
+                    "watermark_type": "Google SynthID Invisible Watermark",
+                }
+            }
+        }
+        explanations = generate_explanation(pred_result, img)
+        assert any("Google Gemini" in e and "SynthID" in e for e in explanations)

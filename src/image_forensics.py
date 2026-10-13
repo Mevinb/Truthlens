@@ -29,10 +29,11 @@ from PIL import ExifTags, Image
 
 AI_TERMS = {
     "ai generated", "aigenerated", "artificial intelligence", "automatic1111",
-    "comfyui", "dall-e", "dalle", "diffusion", "firefly", "flux", "fooocus",
-    "generative fill", "gpt image", "gpt-image", "invokeai", "leonardo",
-    "midjourney", "negative prompt", "novelai", "openai", "prompt",
-    "sampler", "seed", "stable diffusion", "steps", "text-to-image",
+    "chatgpt", "comfyui", "dall-e", "dalle", "deepmind", "diffusion", "firefly",
+    "flux", "fooocus", "gemini", "generative fill", "google ai", "gpt image",
+    "gpt-image", "imagen", "invokeai", "leonardo", "midjourney", "negative prompt",
+    "novelai", "openai", "prompt", "sampler", "seed", "stable diffusion", "steps",
+    "synthid", "text-to-image", "trainedalgorithmicmedia",
 }
 EDITOR_TERMS = {
     "adobe", "affinity", "canva", "capture one", "darktable", "gimp",
@@ -242,24 +243,360 @@ def _container(img: Image.Image, raw: Optional[bytes]) -> Dict[str, Any]:
     }
 
 
-def _content_credentials(raw: Optional[bytes], metadata: Dict[str, Any]) -> Dict[str, Any]:
-    low = raw.lower() if raw else b""
-    c2pa = any(token in low for token in (b"c2pa", b"contentauth", b"content credentials"))
-    jumbf = any(token in low for token in (b"jumb", b"jumd", b"c2ma"))
-    manifest_ref = any(
-        token in low
-        for token in (b"c2pa_manifest", b"dcterms:provenance", b"manifeststore")
-    )
+def _extract_xmp(img: Image.Image, raw: Optional[bytes]) -> Dict[str, Any]:
+    """Extract and parse XMP packet into structured metadata."""
+    xmp_str = ""
+    info = getattr(img, "info", {}) or {}
+    for key in ("XML:com.adobe.xmp", "xmp", "XMP"):
+        val = info.get(key)
+        if isinstance(val, (str, bytes)):
+            xmp_str = val.decode("utf-8", errors="ignore") if isinstance(val, bytes) else val
+            if xmp_str:
+                break
+
+    if not xmp_str and raw:
+        xmp_header = b"http://ns.adobe.com/xap/1.0/\x00"
+        idx = raw.find(xmp_header)
+        if idx != -1:
+            start = idx + len(xmp_header)
+            end = raw.find(b"</x:xmpmeta>", start)
+            if end != -1:
+                xmp_str = raw[start:end + len(b"</x:xmpmeta>")].decode("utf-8", errors="ignore")
+            else:
+                end_pkt = raw.find(b"<?xpacket end=", start)
+                if end_pkt != -1:
+                    xmp_str = raw[start:end_pkt + 20].decode("utf-8", errors="ignore")
+        if not xmp_str:
+            start = raw.find(b"<x:xmpmeta")
+            if start != -1:
+                end = raw.find(b"</x:xmpmeta>", start)
+                if end != -1:
+                    xmp_str = raw[start:end + len(b"</x:xmpmeta>")].decode("utf-8", errors="ignore")
+
+    if not xmp_str:
+        return {
+            "present": False,
+            "raw_length": 0,
+            "digital_source_type": None,
+            "credit": None,
+            "creator": None,
+            "software": None,
+            "source": None,
+            "text": "",
+        }
+
+    digital_source_type = None
+    credit = None
+    creator = None
+    software = None
+    source = None
+
+    dst_match = re.search(r'(?:DigitalSourceType|digitalSourceType)["\'>\s]*([^<"\'\s>]+)', xmp_str, re.IGNORECASE)
+    if dst_match:
+        digital_source_type = dst_match.group(1).strip()
+
+    credit_match = re.search(r'(?:Credit|credit|photoshop:Credit)["\'>\s]*([^<"\'>]+)', xmp_str, re.IGNORECASE)
+    if credit_match:
+        credit = credit_match.group(1).strip()
+
+    creator_match = re.search(r'(?:Creator|creator|dc:creator|CreatorTool)["\'>\s]*([^<"\'>]+)', xmp_str, re.IGNORECASE)
+    if creator_match:
+        creator = creator_match.group(1).strip()
+
+    software_match = re.search(r'(?:Software|software|xmp:CreatorTool)["\'>\s]*([^<"\'>]+)', xmp_str, re.IGNORECASE)
+    if software_match:
+        software = software_match.group(1).strip()
+
+    source_match = re.search(r'(?:Source|source|dc:source|photoshop:Source)["\'>\s]*([^<"\'>]+)', xmp_str, re.IGNORECASE)
+    if source_match:
+        source = source_match.group(1).strip()
+
     return {
-        "detected": bool(c2pa or jumbf or manifest_ref),
-        "c2pa_marker": c2pa,
-        "jumbf_marker": jumbf,
+        "present": True,
+        "raw_length": len(xmp_str),
+        "digital_source_type": digital_source_type,
+        "credit": credit,
+        "creator": creator,
+        "software": software,
+        "source": source,
+        "text": xmp_str[:2000],
+    }
+
+
+def _content_credentials(raw: Optional[bytes], metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse C2PA JUMBF container and extract claims / software agents."""
+    if not raw:
+        return {
+            "detected": False,
+            "c2pa_marker": False,
+            "jumbf_marker": False,
+            "manifest_reference": False,
+            "claim_generator": None,
+            "software_agent": None,
+            "action": None,
+            "digital_source_type": None,
+            "is_ai_generated": False,
+            "note": "No C2PA/JUMBF marker found. Absence does not imply the image is authentic.",
+        }
+
+    low = raw.lower()
+    c2pa_marker = any(token in low for token in (b"c2pa", b"contentauth", b"content credentials"))
+    jumbf_marker = any(token in low for token in (b"jumb", b"jumd", b"c2ma", b"c2cs", b"c2as"))
+    manifest_ref = any(token in low for token in (b"c2pa_manifest", b"dcterms:provenance", b"manifeststore"))
+
+    detected = bool(c2pa_marker or jumbf_marker or manifest_ref)
+    if not detected:
+        return {
+            "detected": False,
+            "c2pa_marker": False,
+            "jumbf_marker": False,
+            "manifest_reference": False,
+            "claim_generator": None,
+            "software_agent": None,
+            "action": None,
+            "digital_source_type": None,
+            "is_ai_generated": False,
+            "note": "No C2PA/JUMBF marker found. Absence does not imply the image is authentic.",
+        }
+
+    raw_text = raw.decode("latin-1", errors="ignore")
+    raw_text_low = raw_text.lower()
+
+    claim_generator = None
+    gen_match = re.search(r'["\']?(?:claim_generator|claimGenerator)["\']?\s*[:=]\s*["\']?([^"\'\,\}\s]+)', raw_text, re.IGNORECASE)
+    if gen_match:
+        claim_generator = gen_match.group(1).strip()
+    elif "openai" in raw_text_low and ("c2pa" in raw_text_low or "jumb" in raw_text_low):
+        claim_generator = "OpenAI"
+    elif "google" in raw_text_low and ("c2pa" in raw_text_low or "jumb" in raw_text_low):
+        claim_generator = "Google"
+
+    software_agent = None
+    sa_match = re.search(r'["\']?(?:softwareAgent|software_agent)["\']?\s*[:=]\s*["\']?([^"\'\,\}\s]+)', raw_text, re.IGNORECASE)
+    if sa_match:
+        software_agent = sa_match.group(1).strip()
+    elif "chatgpt" in raw_text_low:
+        software_agent = "ChatGPT"
+    elif "dall-e" in raw_text_low or "dall·e" in raw_text_low:
+        software_agent = "DALL-E 3"
+
+    action = None
+    act_match = re.search(r'["\']?(?:c2pa\.action|action)["\']?\s*[:=]\s*["\']?([^"\'\,\}\s]+)', raw_text, re.IGNORECASE)
+    if act_match:
+        action = act_match.group(1).strip()
+
+    digital_source_type = None
+    if "trainedalgorithmicmedia" in raw_text_low:
+        digital_source_type = "trainedAlgorithmicMedia"
+    elif "compositewithtrainedalgorithmicmedia" in raw_text_low:
+        digital_source_type = "compositeWithTrainedAlgorithmicMedia"
+
+    is_ai = bool(
+        digital_source_type
+        or (software_agent and any(term in software_agent.lower() for term in ("chatgpt", "dall-e", "dalle", "firefly", "midjourney", "imagen", "gemini")))
+        or (claim_generator and any(term in claim_generator.lower() for term in ("openai", "chatgpt", "google", "dall-e")))
+    )
+
+    return {
+        "detected": True,
+        "c2pa_marker": c2pa_marker,
+        "jumbf_marker": jumbf_marker,
         "manifest_reference": manifest_ref,
-        "note": (
-            "A marker was found, but cryptographic trust was not validated."
-            if c2pa or jumbf or manifest_ref
-            else "No C2PA/JUMBF marker found. Absence does not imply the image is authentic."
-        ),
+        "claim_generator": claim_generator,
+        "software_agent": software_agent,
+        "action": action,
+        "digital_source_type": digital_source_type,
+        "is_ai_generated": is_ai,
+        "note": "C2PA/JUMBF content credential markers and claims identified.",
+    }
+
+
+def _detect_gemini(metadata: Dict[str, Any], xmp: Dict[str, Any], c2pa: Dict[str, Any], invisible: Dict[str, Any], raw: Optional[bytes]) -> Dict[str, Any]:
+    """Detect Google Gemini / Imagen specific watermarks and provenance metadata."""
+    evidence = []
+    confidence = 0.0
+    watermark_type = None
+
+    raw_low = raw.lower() if raw else b""
+    text_corpus = (
+        "\n".join(f"{k}: {v}" for k, v in metadata.get("fields", {}).items())
+        + "\n" + xmp.get("text", "")
+        + "\n" + (c2pa.get("claim_generator") or "")
+        + "\n" + (c2pa.get("software_agent") or "")
+    ).lower()
+
+    # 1. SynthID watermarking detection
+    synthid_present = (
+        "synthid" in text_corpus
+        or "synthid" in invisible.get("explicit_markers", [])
+        or b"synthid" in raw_low
+    )
+    if synthid_present:
+        evidence.append("Google DeepMind SynthID watermark signature identified")
+        confidence = max(confidence, 0.98)
+        watermark_type = "Google SynthID Invisible Watermark"
+
+    # 2. IPTC DigitalSourceType = trainedAlgorithmicMedia + Google Credit / Source
+    dst = (xmp.get("digital_source_type") or "").lower()
+    credit = (xmp.get("credit") or "").lower()
+    source = (xmp.get("source") or "").lower()
+    software = (xmp.get("software") or "").lower()
+    creator = (xmp.get("creator") or "").lower()
+
+    is_google_ai_credit = any(term in credit for term in ("google ai", "generated with google", "google"))
+    is_google_software = any(term in software for term in ("gemini", "imagen", "google"))
+    is_google_source = "google" in source or "google" in creator
+
+    if "trainedalgorithmicmedia" in dst and (is_google_ai_credit or is_google_software or is_google_source):
+        evidence.append(f"IPTC DigitalSourceType is trainedAlgorithmicMedia with Google credit ('{xmp.get('credit') or 'Google AI'}')")
+        confidence = max(confidence, 0.99)
+        watermark_type = watermark_type or "Google AI Metadata (IPTC Standard)"
+    elif is_google_ai_credit:
+        evidence.append(f"Credit tag indicates Google AI generation: '{xmp.get('credit')}'")
+        confidence = max(confidence, 0.95)
+        watermark_type = watermark_type or "Google AI Credit Metadata"
+
+    # 3. Google C2PA manifest
+    if c2pa.get("detected"):
+        cg = (c2pa.get("claim_generator") or "").lower()
+        sa = (c2pa.get("software_agent") or "").lower()
+        if "google" in cg or "gemini" in sa or "imagen" in sa:
+            evidence.append(f"C2PA manifest confirms Google provenance (Claim: {c2pa.get('claim_generator')}, Agent: {c2pa.get('software_agent')})")
+            confidence = max(confidence, 0.99)
+            watermark_type = "Google C2PA Content Credentials"
+
+    # 4. Explicit Gemini / Imagen tags in metadata
+    if any(term in text_corpus for term in ("gemini", "imagen 2", "imagen 3", "google imagen")):
+        if not evidence:
+            evidence.append("Metadata specifies Gemini/Imagen model family")
+            confidence = max(confidence, 0.90)
+            watermark_type = watermark_type or "Google Gemini Model Metadata"
+
+    return {
+        "detected": bool(evidence),
+        "confidence": confidence,
+        "evidence": evidence,
+        "watermark_type": watermark_type or "None",
+        "model_name": "Imagen 3 / Gemini",
+    }
+
+
+def _detect_chatgpt(metadata: Dict[str, Any], xmp: Dict[str, Any], c2pa: Dict[str, Any], raw: Optional[bytes]) -> Dict[str, Any]:
+    """Detect OpenAI / ChatGPT (DALL-E 3) specific C2PA credentials & metadata."""
+    evidence = []
+    confidence = 0.0
+    watermark_type = None
+
+    raw_low = raw.lower() if raw else b""
+    text_corpus = (
+        "\n".join(f"{k}: {v}" for k, v in metadata.get("fields", {}).items())
+        + "\n" + xmp.get("text", "")
+    ).lower()
+
+    # 1. C2PA Credentials from OpenAI / ChatGPT
+    if c2pa.get("detected"):
+        cg = (c2pa.get("claim_generator") or "").lower()
+        sa = (c2pa.get("software_agent") or "").lower()
+        if any(term in cg for term in ("openai", "chatgpt", "dall-e", "dalle")) or any(term in sa for term in ("chatgpt", "dall-e", "dalle", "openai")):
+            evidence.append(f"C2PA Content Credentials identify OpenAI agent ({c2pa.get('software_agent') or c2pa.get('claim_generator') or 'ChatGPT'})")
+            confidence = max(confidence, 0.99)
+            watermark_type = "C2PA Content Credentials (OpenAI)"
+        elif c2pa.get("is_ai_generated") and ("chatgpt" in text_corpus or "openai" in text_corpus):
+            evidence.append("C2PA AI credential coupled with OpenAI indicators")
+            confidence = max(confidence, 0.97)
+            watermark_type = "C2PA Content Credentials (OpenAI)"
+
+    # 2. EXIF / IPTC / XMP tags for DALL-E or ChatGPT
+    fields = {k.lower(): str(v).lower() for k, v in metadata.get("fields", {}).items()}
+    software = fields.get("software", "") or (xmp.get("software") or "").lower()
+
+    if any(term in software for term in ("dall·e", "dall-e", "dalle", "chatgpt", "openai")):
+        evidence.append(f"Software metadata tag: '{metadata.get('fields', {}).get('Software') or xmp.get('software')}'")
+        confidence = max(confidence, 0.99)
+        watermark_type = watermark_type or "OpenAI EXIF Metadata"
+
+    if "openai" in text_corpus and any(term in text_corpus for term in ("dall-e", "prompt", "generation")):
+        if not evidence:
+            evidence.append("OpenAI generation indicators in metadata")
+            confidence = max(confidence, 0.92)
+            watermark_type = watermark_type or "OpenAI Model Metadata"
+
+    return {
+        "detected": bool(evidence),
+        "confidence": confidence,
+        "evidence": evidence,
+        "watermark_type": watermark_type or "None",
+        "model_name": "DALL-E 3 (ChatGPT)",
+    }
+
+
+def _ai_attribution(metadata: Dict[str, Any], xmp: Dict[str, Any], c2pa: Dict[str, Any], gemini: Dict[str, Any], chatgpt: Dict[str, Any]) -> Dict[str, Any]:
+    """Provide consolidated AI provider & model provenance attribution."""
+    if gemini.get("detected"):
+        return {
+            "detected": True,
+            "provider": "Google Gemini",
+            "model_name": gemini.get("model_name", "Imagen 3 / Gemini"),
+            "watermark_detected": True,
+            "watermark_type": gemini.get("watermark_type", "SynthID & AI Metadata"),
+            "confidence": gemini.get("confidence", 0.99),
+            "evidence": gemini.get("evidence", []),
+            "digital_source_type": xmp.get("digital_source_type") or c2pa.get("digital_source_type"),
+            "c2pa_claim_generator": c2pa.get("claim_generator"),
+        }
+    if chatgpt.get("detected"):
+        return {
+            "detected": True,
+            "provider": "OpenAI ChatGPT",
+            "model_name": chatgpt.get("model_name", "DALL-E 3"),
+            "watermark_detected": True,
+            "watermark_type": chatgpt.get("watermark_type", "C2PA Content Credentials"),
+            "confidence": chatgpt.get("confidence", 0.99),
+            "evidence": chatgpt.get("evidence", []),
+            "digital_source_type": xmp.get("digital_source_type") or c2pa.get("digital_source_type"),
+            "c2pa_claim_generator": c2pa.get("claim_generator"),
+        }
+
+    ai_terms = metadata.get("ai_terms", [])
+    if ai_terms:
+        provider = "Stable Diffusion" if any(t in ai_terms for t in ("stable diffusion", "automatic1111", "comfyui", "flux")) else \
+                   "Midjourney" if "midjourney" in ai_terms else \
+                   "Adobe Firefly" if "firefly" in ai_terms else "AI Generator"
+        return {
+            "detected": True,
+            "provider": provider,
+            "model_name": provider,
+            "watermark_detected": False,
+            "watermark_type": "Generator Metadata Parameters",
+            "confidence": 0.95,
+            "evidence": [f"AI terms in metadata: {', '.join(ai_terms)}"],
+            "digital_source_type": xmp.get("digital_source_type") or c2pa.get("digital_source_type"),
+            "c2pa_claim_generator": c2pa.get("claim_generator"),
+        }
+
+    if c2pa.get("is_ai_generated"):
+        return {
+            "detected": True,
+            "provider": c2pa.get("claim_generator") or "AI Certified",
+            "model_name": c2pa.get("software_agent") or "Generative AI",
+            "watermark_detected": True,
+            "watermark_type": "C2PA DigitalSourceType",
+            "confidence": 0.98,
+            "evidence": ["C2PA Content Credentials indicate synthetic media"],
+            "digital_source_type": c2pa.get("digital_source_type"),
+            "c2pa_claim_generator": c2pa.get("claim_generator"),
+        }
+
+    return {
+        "detected": False,
+        "provider": "None",
+        "model_name": "None",
+        "watermark_detected": False,
+        "watermark_type": "None",
+        "confidence": 0.0,
+        "evidence": [],
+        "digital_source_type": None,
+        "c2pa_claim_generator": None,
     }
 
 
@@ -433,12 +770,31 @@ def analyze_image_provenance(source: Any) -> Dict[str, Any]:
 
     metadata = _metadata(img, raw)
     container = _container(img, raw)
+    xmp = _extract_xmp(img, raw)
     credentials = _content_credentials(raw, metadata)
     visible = _visible_watermark(img)
     invisible = _invisible_watermark(img, raw)
     fingerprints = _fingerprints(img, raw)
 
+    gemini = _detect_gemini(metadata, xmp, credentials, invisible, raw)
+    chatgpt = _detect_chatgpt(metadata, xmp, credentials, raw)
+    attribution = _ai_attribution(metadata, xmp, credentials, gemini, chatgpt)
+
     signals: List[Dict[str, str]] = []
+    if gemini["detected"]:
+        signals.append({
+            "level": "strong",
+            "kind": "watermark",
+            "title": "Google Gemini / SynthID provenance detected",
+            "detail": "; ".join(gemini["evidence"]),
+        })
+    if chatgpt["detected"]:
+        signals.append({
+            "level": "strong",
+            "kind": "watermark",
+            "title": "OpenAI / ChatGPT provenance detected",
+            "detail": "; ".join(chatgpt["evidence"]),
+        })
     if metadata["ai_terms"]:
         signals.append({
             "level": "strong",
@@ -460,7 +816,7 @@ def analyze_image_provenance(source: Any) -> Dict[str, Any]:
             "title": "Camera-style EXIF fields present",
             "detail": ", ".join(metadata["camera_fields"]),
         })
-    if credentials["detected"]:
+    if credentials["detected"] and not (gemini["detected"] or chatgpt["detected"]):
         signals.append({
             "level": "strong",
             "kind": "credentials",
@@ -474,7 +830,7 @@ def analyze_image_provenance(source: Any) -> Dict[str, Any]:
             "title": "Possible visible text/logo watermark",
             "detail": ", ".join(visible["regions"]) or "outer image band",
         })
-    if invisible["suspected"]:
+    if invisible["suspected"] and not gemini["detected"]:
         signals.append({
             "level": "weak" if not invisible["explicit_markers"] else "strong",
             "kind": "invisible_watermark",
@@ -499,7 +855,11 @@ def analyze_image_provenance(source: Any) -> Dict[str, Any]:
         "summary": strongest,
         "signals": signals,
         "metadata": metadata,
+        "xmp": xmp,
         "content_credentials": credentials,
+        "gemini_provenance": gemini,
+        "chatgpt_provenance": chatgpt,
+        "ai_attribution": attribution,
         "visible_watermark": visible,
         "invisible_watermark": invisible,
         "container": container,

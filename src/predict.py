@@ -519,15 +519,27 @@ def compute_fft_spectral_score(img_np: np.ndarray) -> Dict[str, Any]:
 
 
 # ─── Generator Detection ──────────────────────────────────────────────────────
-def detect_likely_generator(img: np.ndarray) -> str:
+def detect_likely_generator(img: np.ndarray, provenance: Optional[Dict[str, Any]] = None) -> str:
     """
-    Heuristic generator label based on spatial & frequency statistics.
+    Generator label based on verified provenance (Gemini / ChatGPT / C2PA / EXIF)
+    or spatial & frequency statistics fallback.
+    """
+    if provenance:
+        attr = provenance.get("ai_attribution") or {}
+        if attr.get("detected") and attr.get("confidence", 0) >= 0.85:
+            provider = attr.get("provider", "")
+            model_name = attr.get("model_name", "")
+            if provider == "Google Gemini":
+                return "Google Gemini (Imagen 3)"
+            elif provider == "OpenAI ChatGPT":
+                return "ChatGPT (DALL-E 3)"
+            elif provider in ("Midjourney", "Stable Diffusion", "Adobe Firefly"):
+                return provider
+            elif model_name and model_name != "None":
+                return f"{provider} ({model_name})"
+            elif provider and provider != "None":
+                return provider
 
-    NOTE: this is an unvalidated heuristic. The training corpus carries no
-    per-generator ground truth, so these thresholds cannot be checked against
-    real labels — treat the output as a hint, not a finding. Validating it needs
-    a generator-labelled holdout (see src/evaluate_generators.py).
-    """
     orig_h, orig_w = img.shape[:2]
     if img.shape[:2] != (224, 224):
         img_resized = cv2.resize(img, (224, 224))
@@ -591,8 +603,15 @@ def generate_explanation(result: Dict[str, Any], img: np.ndarray) -> List[str]:
     pred   = result["prediction"]
     conf   = result["confidence"]
 
+    prov = result.get("provenance_analysis") or {}
+    attr = result.get("ai_attribution") or prov.get("ai_attribution") or {}
+    if attr.get("detected") and attr.get("confidence", 0) >= 0.85:
+        provider = attr.get("provider", "AI")
+        wm_type = attr.get("watermark_type", "provenance metadata")
+        reasons.append(f"Authoritative provenance: {provider} watermark / metadata verified ({wm_type})")
+
     if pred == "FAKE":
-        if conf > 90:
+        if conf > 90 and not reasons:
             reasons.append("Very high confidence of AI generation detected")
 
         # Analyse texture consistency
@@ -1191,13 +1210,31 @@ def predict_image(
         result = _get_predictor(model_type, cfg).predict(model_source)
         result.update(forensic_metrics(model_source))
 
-    # Enrich result
-    result["explanation"] = generate_explanation(result, img_np)
-    if result["prediction"] == "FAKE":
-        result["likely_generator"] = detect_likely_generator(img_np)
+    # Enrich result with provenance analysis first
+    prov = analyze_image_provenance(original_source)
+    result["provenance_analysis"] = prov
+    attr = prov.get("ai_attribution") or {}
+    has_prov_ai = bool(attr.get("detected") and attr.get("confidence", 0) >= 0.85)
+
+    if result["prediction"] == "FAKE" or has_prov_ai:
+        result["likely_generator"] = detect_likely_generator(img_np, prov)
     else:
         result["likely_generator"] = "N/A"
-    result["provenance_analysis"] = analyze_image_provenance(original_source)
+
+    result["provenance_verified"] = has_prov_ai
+    result["ai_attribution"] = attr
+
+    # Calibrated consensus verdict
+    if has_prov_ai:
+        result["consensus_verdict"] = "FAKE"
+        result["consensus_confidence"] = max(result["confidence"], float(attr.get("confidence", 0.99) * 100.0))
+        result["consensus_basis"] = f"Verified {attr.get('provider', 'AI')} provenance ({attr.get('watermark_type', 'watermark')})"
+    else:
+        result["consensus_verdict"] = result["prediction"]
+        result["consensus_confidence"] = result["confidence"]
+        result["consensus_basis"] = f"Neural model ({result.get('model_type', model_type)})"
+
+    result["explanation"] = generate_explanation(result, img_np)
 
     return result, heatmap
 
