@@ -333,4 +333,18 @@ def sample_images(per_class: int = 3) -> List[Dict[str, str]]:
         step = max(1, len(files) // max(per_class, 1))
         for path in files[::step][:per_class]:
             out.append({"path": str(path), "truth": truth, "name": path.name})
+
+    if not out:
+        demo_dir = PROJECT_ROOT / "app" / "demo_samples"
+        presets = [
+            ("real_camera_sample.jpg", "REAL", "Real Camera Photo (Canon EXIF)"),
+            ("gemini_synthid_sample.png", "FAKE", "Google Gemini (SynthID & IPTC)"),
+            ("chatgpt_c2pa_sample.png", "FAKE", "OpenAI ChatGPT (C2PA Credentials)"),
+        ]
+        for fname, truth, label in presets:
+            fpath = demo_dir / fname
+            if fpath.exists():
+                out.append({"path": str(fpath), "truth": truth, "name": label})
+
     return out
+

@@ -193,3 +193,93 @@ def test_camera_image_has_no_ai_attribution():
     assert report["chatgpt_provenance"]["detected"] is False
     assert report["ai_attribution"]["detected"] is False
     assert report["ai_attribution"]["provider"] == "None"
+
+
+def test_chatgpt_binary_cbor_c2pa_manifest():
+    import struct
+    from src.image_forensics import analyze_image_provenance
+
+    def _cbor_str(s: str) -> bytes:
+        b = s.encode("utf-8")
+        if len(b) < 24:
+            return bytes([0x60 + len(b)]) + b
+        return bytes([0x78, len(b)]) + b
+
+    # Build binary CBOR key-value pairs without JSON delimiters ([:=])
+    cbor_data = (
+        _cbor_str("claim_generator") + _cbor_str("OpenAI/ChatGPT") +
+        _cbor_str("softwareAgent") + _cbor_str("ChatGPT (GPT-Image-2)") +
+        _cbor_str("action") + _cbor_str("c2pa.created") +
+        _cbor_str("digitalSourceType") + _cbor_str("trainedAlgorithmicMedia")
+    )
+    jumbf_box = b"c2pa_manifest\x00\x00jumb\x00\x00jumd\x00\x00c2ma" + cbor_data
+    raw = _png_bytes(append=jumbf_box)
+
+    report = analyze_image_provenance(raw)
+    assert report["available"]
+    c2pa = report["content_credentials"]
+    assert c2pa["detected"] is True
+    assert c2pa["claim_generator"] == "OpenAI/ChatGPT"
+    assert c2pa["software_agent"] == "ChatGPT (GPT-Image-2)"
+    assert c2pa["is_ai_generated"] is True
+
+    chatgpt = report["chatgpt_provenance"]
+    assert chatgpt["detected"] is True
+    assert chatgpt["model_name"] == "ChatGPT (GPT-Image-2)"
+    assert "C2PA" in chatgpt["watermark_type"]
+    assert report["ai_attribution"]["provider"] == "OpenAI ChatGPT"
+
+
+def test_chatgpt_dalle_utf8_middle_dot_in_exif():
+    from src.image_forensics import analyze_image_provenance
+
+    # UTF-8 encoded middle dot in "DALL·E 3"
+    exif = Image.Exif()
+    exif[305] = "DALL·E 3 by OpenAI"
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (120, 160, 210)).save(buf, format="JPEG", exif=exif)
+
+    report = analyze_image_provenance(buf.getvalue())
+    assert report["available"]
+    assert report["chatgpt_provenance"]["detected"] is True
+    assert report["ai_attribution"]["provider"] == "OpenAI ChatGPT"
+    assert "DALL-E 3" in report["chatgpt_provenance"]["model_name"]
+
+
+def test_gemini_webp_provenance_detection():
+    import struct
+    from src.image_forensics import analyze_image_provenance
+
+    # Create a base WebP image
+    buf = io.BytesIO()
+    Image.new("RGB", (80, 80), (45, 95, 145)).save(buf, format="WEBP")
+    base_webp = buf.getvalue()
+
+    # Create an XMP packet with Google AI provenance
+    xmp_packet = (
+        b'<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+        b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        b'<rdf:Description rdf:about="" '
+        b'xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/" '
+        b'xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">'
+        b'<Iptc4xmpExt:DigitalSourceType>http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia</Iptc4xmpExt:DigitalSourceType>'
+        b'<photoshop:Credit>Generated with Google AI</photoshop:Credit>'
+        b'<photoshop:Source>Google Imagen 3</photoshop:Source>'
+        b'</rdf:Description></rdf:RDF></x:xmpmeta>'
+    )
+    # Append as a WebP XMP chunk
+    xmp_chunk = b"XMP " + struct.pack("<I", len(xmp_packet)) + xmp_packet
+    if len(xmp_packet) % 2 == 1:
+        xmp_chunk += b"\x00"
+
+    raw_webp = base_webp + xmp_chunk
+
+    report = analyze_image_provenance(raw_webp)
+    assert report["available"]
+    assert "XMP" in report["container"]["webp_chunks"]
+    assert report["xmp"]["present"] is True
+    assert "trainedalgorithmicmedia" in (report["xmp"]["digital_source_type"] or "").lower()
+    assert report["gemini_provenance"]["detected"] is True
+    assert report["ai_attribution"]["provider"] == "Google Gemini"
+    assert report["gemini_provenance"]["watermark_type"] == "Google AI Metadata (IPTC Standard)"
+

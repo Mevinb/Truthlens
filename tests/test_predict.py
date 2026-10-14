@@ -363,3 +363,80 @@ class TestProvenanceIntegration:
         }
         explanations = generate_explanation(pred_result, img)
         assert any("Google Gemini" in e and "SynthID" in e for e in explanations)
+
+    def test_detect_likely_generator_uses_gpt_image_2_provenance(self):
+        from src.predict import detect_likely_generator
+        img = np.zeros((224, 224, 3), dtype=np.uint8)
+        prov = {
+            "ai_attribution": {
+                "detected": True,
+                "provider": "OpenAI ChatGPT",
+                "model_name": "ChatGPT (GPT-Image-2)",
+                "confidence": 0.99,
+                "watermark_detected": True,
+                "watermark_type": "C2PA Content Credentials (OpenAI)",
+            }
+        }
+        result = detect_likely_generator(img, prov)
+        assert result == "ChatGPT (GPT-Image-2)"
+
+    def test_consensus_overrides_prediction_and_probabilities_on_authoritative_provenance(self):
+        from src.predict import predict_image
+        from src.preprocessing import Config
+        from PIL import Image, PngImagePlugin
+        import io
+
+        # Build a PNG carrying an authoritative Gemini SynthID / IPTC watermark
+        buf = io.BytesIO()
+        info = PngImagePlugin.PngInfo()
+        info.add_text("Credit", "Generated with Google AI")
+        info.add_text("Provenance", "Google DeepMind SynthID digital watermark embedded")
+        Image.new("RGB", (64, 64), (100, 150, 200)).save(buf, format="PNG", pnginfo=info)
+        raw_bytes = buf.getvalue()
+
+        # Call predict_image with a classical model or dummy predictor
+        cfg = Config()
+        result, _ = predict_image(raw_bytes, cfg, model_type="logistic_regression", with_gradcam=False)
+
+        assert result["prediction"] == "FAKE"
+        assert result["provenance_verified"] is True
+        assert result["consensus_verdict"] == "FAKE"
+        assert result["confidence"] >= 95.0
+        assert result["probabilities"]["FAKE"] >= 95.0
+        assert result["probabilities"]["REAL"] <= 5.0
+        assert result["emoji"] == "🤖"
+        assert "Google Gemini" in result["consensus_basis"]
+
+
+# ─── Thumbnail Data URL Generation ─────────────────────────────────────────────
+class TestThumbnailGeneration:
+    def test_make_thumbnail_data_url_valid_png(self):
+        from app.app import make_thumbnail_data_url
+        import io
+
+        buf = io.BytesIO()
+        Image.new("RGB", (300, 200), (255, 0, 0)).save(buf, format="PNG")
+        data_url = make_thumbnail_data_url(buf.getvalue(), max_size=96)
+        assert data_url.startswith("data:image/png;base64,")
+        assert len(data_url) > 50
+
+    def test_make_thumbnail_data_url_rgba_and_grayscale(self):
+        from app.app import make_thumbnail_data_url
+        import io
+
+        # RGBA
+        buf_rgba = io.BytesIO()
+        Image.new("RGBA", (150, 150), (0, 255, 0, 128)).save(buf_rgba, format="PNG")
+        url_rgba = make_thumbnail_data_url(buf_rgba.getvalue(), max_size=64)
+        assert url_rgba.startswith("data:image/png;base64,")
+
+        # Grayscale 'L'
+        buf_l = io.BytesIO()
+        Image.new("L", (100, 100), 200).save(buf_l, format="PNG")
+        url_l = make_thumbnail_data_url(buf_l.getvalue(), max_size=64)
+        assert url_l.startswith("data:image/png;base64,")
+
+    def test_make_thumbnail_data_url_corrupt_bytes(self):
+        from app.app import make_thumbnail_data_url
+        assert make_thumbnail_data_url(b"corrupt image bytes") == ""
+

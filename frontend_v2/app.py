@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -152,6 +153,20 @@ def load_image(raw: bytes) -> Tuple[Optional[Image.Image], Optional[str]]:
         return image.convert("RGB"), None
     except Exception as exc:  # noqa: BLE001
         return None, f"The file could not be decoded ({type(exc).__name__})."
+
+
+def make_thumbnail_data_url(raw: bytes, max_size: int = 96) -> str:
+    """Generate a lightweight Base64 data URL thumbnail for dataframe and card display."""
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.thumbnail((max_size, max_size))
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+    except Exception:
+        return ""
 
 
 def model_label(model_type: str) -> str:
@@ -390,11 +405,16 @@ def render_result_summary(
             f"{metrics['split']} split."
         )
 
-    subtitle = (
-        f"Analyzed with <b>{T.safe(settings['display'])}</b>. {T.safe(reliability)}"
-    )
+    prov_verified = result.get("provenance_verified", False)
+    if prov_verified:
+        prov_basis = result.get("consensus_basis") or "Verified provenance"
+        subtitle = f"🛡️ <b>{T.safe(prov_basis)}</b>"
+    else:
+        subtitle = (
+            f"Analyzed with <b>{T.safe(settings['display'])}</b>. {T.safe(reliability)}"
+        )
 
-    if settings["model_type"] in {"resnet18", "ensemble"}:
+    if settings["model_type"] in {"resnet18", "ensemble"} and not prov_verified:
         width, height = item.get("size", (0, 0))
         if width and height:
             tier = tier_for_size(width, height)
@@ -412,6 +432,18 @@ def render_result_summary(
         T.verdict(label, confidence, subtitle, tone),
         unsafe_allow_html=True,
     )
+
+    if result.get("provenance_overridden"):
+        attr = result.get("ai_attribution") or {}
+        provider = T.safe(str(attr.get("provider", "AI")))
+        wm_type = T.safe(str(attr.get("watermark_type", "watermark")))
+        st.markdown(
+            T.callout(
+                f"Authoritative Provenance Override: This image carries verified {provider} watermarking or metadata ({wm_type}). Calibrated consensus classifies it as AI-GENERATED.",
+                "caution",
+            ),
+            unsafe_allow_html=True,
+        )
 
     if inconclusive:
         st.markdown(
@@ -441,6 +473,50 @@ def render_result_summary(
             ),
             unsafe_allow_html=True,
         )
+
+    # ─── Watermark & Provenance Scan Status Card ───
+    prov = result.get("provenance_analysis") or {}
+    gem = prov.get("gemini_provenance") or {}
+    gpt = prov.get("chatgpt_provenance") or {}
+    inv = prov.get("invisible_watermark") or {}
+    c2pa = prov.get("content_credentials") or {}
+
+    gem_detected = bool(gem.get("detected"))
+    gpt_detected = bool(gpt.get("detected") or c2pa.get("is_ai_generated"))
+    inv_score = float(inv.get("score", 0.0))
+    inv_suspected = bool(inv.get("suspected"))
+
+    st.markdown(
+        f'<div style="margin: 14px 0 18px 0; padding: 12px 16px; border: 1px solid rgba(255,255,255,0.08); '
+        f'border-radius: 8px; background: rgba(255,255,255,0.02);">'
+        f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">'
+        f'<span style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em; font-weight:700; color:{T.TEXT_3};">'
+        f'🛡️ Watermark & Provenance Verification Scan</span>'
+        f'<span style="font-size:0.76rem; color:{T.FAKE if result.get("provenance_verified") else T.TEXT_3}; font-weight:600;">'
+        f'{"⚠️ Verified AI Watermark Found" if result.get("provenance_verified") else "⚪ Scanned — No Hidden Watermarks Found"}'
+        f'</span></div>'
+        f'<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px;">'
+        f'<div style="background:rgba(255,255,255,0.03); padding:8px 12px; border-radius:6px; border-left:3px solid '
+        f'{T.FAKE if gem_detected else T.REAL};">'
+        f'<div style="font-size:0.72rem; color:{T.TEXT_3}; font-weight:600;">Google Gemini (SynthID & IPTC)</div>'
+        f'<div style="font-size:0.83rem; font-weight:700; color:{T.FAKE if gem_detected else T.REAL}; margin-top:2px;">'
+        f'{"🛡️ " + T.safe(str(gem.get("watermark_type") or "SynthID Detected")) if gem_detected else "✅ Scanned (Not Detected)"}'
+        f'</div></div>'
+        f'<div style="background:rgba(255,255,255,0.03); padding:8px 12px; border-radius:6px; border-left:3px solid '
+        f'{T.FAKE if gpt_detected else T.REAL};">'
+        f'<div style="font-size:0.72rem; color:{T.TEXT_3}; font-weight:600;">OpenAI ChatGPT (C2PA & DALL·E)</div>'
+        f'<div style="font-size:0.83rem; font-weight:700; color:{T.FAKE if gpt_detected else T.REAL}; margin-top:2px;">'
+        f'{"🛡️ " + T.safe(str(gpt.get("watermark_type") or "C2PA Detected")) if gpt_detected else "✅ Scanned (Not Detected)"}'
+        f'</div></div>'
+        f'<div style="background:rgba(255,255,255,0.03); padding:8px 12px; border-radius:6px; border-left:3px solid '
+        f'{T.FAKE if inv_suspected else T.TEXT_3};">'
+        f'<div style="font-size:0.72rem; color:{T.TEXT_3}; font-weight:600;">Invisible Perturbation / LSB</div>'
+        f'<div style="font-size:0.83rem; font-weight:700; color:{T.FAKE if inv_suspected else T.TEXT_1}; margin-top:2px;">'
+        f'{"⚠️ Anomaly Detected" if inv_suspected else "Normal Baseline (" + f"{inv_score:.1f}/100)"}'
+        f'</div></div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
 
     summary, preview = st.columns([1.04, 0.96], gap="large")
     with summary:
@@ -727,22 +803,36 @@ def render_batch_summary(rows: List[Dict[str, Any]]) -> None:
     c3.metric("AI Fakes", fakes)
 
     frame = pd.DataFrame(rows)
+    col_cfg: Dict[str, Any] = {
+        "File": st.column_config.TextColumn("File", width="medium"),
+        "Verdict": st.column_config.TextColumn("Verdict", width="small"),
+        "Confidence": st.column_config.NumberColumn("Confidence", format="%.1f%%"),
+        "P(fake)": st.column_config.ProgressColumn(
+            "P(fake)", format="%.1f%%", min_value=0, max_value=100
+        ),
+        "Watermark / Provenance": st.column_config.TextColumn(
+            "Watermark / Provenance", width="medium"
+        ),
+        "Basis": st.column_config.TextColumn("Basis", width="medium"),
+    }
+    if "Preview" in frame.columns:
+        col_cfg = {
+            "Preview": st.column_config.ImageColumn(
+                "Image", width="small", help="Double-click to enlarge thumbnail"
+            ),
+            **col_cfg,
+        }
+
     st.dataframe(
         frame,
         width="stretch",
         hide_index=True,
-        column_config={
-            "File": st.column_config.TextColumn("File", width="medium"),
-            "Verdict": st.column_config.TextColumn("Verdict", width="small"),
-            "Confidence": st.column_config.NumberColumn("Confidence", format="%.1f%%"),
-            "P(fake)": st.column_config.ProgressColumn(
-                "P(fake)", format="%.1f%%", min_value=0, max_value=100
-            ),
-        },
+        column_config=col_cfg,
     )
+    csv_df = frame.drop(columns=["Preview"]) if "Preview" in frame.columns else frame
     st.download_button(
         "Download batch CSV",
-        data=frame.to_csv(index=False),
+        data=csv_df.to_csv(index=False),
         file_name="truthlens_batch.csv",
         mime="text/csv",
         key="dl_batch_csv_frontend_v2",
@@ -788,12 +878,24 @@ def score_items(items: List[Dict[str, Any]], settings: Dict[str, Any]) -> None:
             )
             continue
         scored.append((item, result, heatmap))
+        prov = result.get("provenance_analysis") or {}
+        attr = result.get("ai_attribution") or prov.get("ai_attribution") or {}
+        if result.get("provenance_verified") and attr.get("detected"):
+            prov_badge = f"🛡️ {attr.get('provider', 'AI')} ({attr.get('watermark_type', 'watermark')})"
+        else:
+            prov_badge = "⚪ Checked (None detected)"
+
+        thumb_uri = make_thumbnail_data_url(item["bytes"], max_size=96)
+        item["thumbnail_uri"] = thumb_uri
         summary.append(
             {
+                "Preview": thumb_uri,
                 "File": item["name"],
                 "Verdict": result["prediction"],
                 "Confidence": float(result["confidence"]),
                 "P(fake)": float(result["probabilities"]["FAKE"]),
+                "Watermark / Provenance": prov_badge,
+                "Basis": result.get("consensus_basis", "Neural model"),
             }
         )
         if progress is not None:
@@ -814,10 +916,45 @@ def score_items(items: List[Dict[str, Any]], settings: Dict[str, Any]) -> None:
 
     if len(scored) > 1:
         render_batch_summary(summary)
+        st.markdown("<hr style='margin:16px 0; border-color:rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
         for item, result, heatmap in scored:
-            with st.expander(f"{clean_text(item['name'])} | {result['prediction']} | {result['confidence']:.1f}%"):
-                render_result_summary(item, result, settings)
-                render_evidence(item["bytes"], result, heatmap)
+            w, h = item.get("size", (0, 0))
+            dims = f"{w}×{h} px" if w and h else ""
+            pred = result["prediction"]
+            is_fake = pred == "FAKE"
+            badge_color = T.FAKE if is_fake else T.REAL
+            badge_bg = T.FAKE_BG if is_fake else T.REAL_BG
+
+            dim_badge = f'<span style="font-size:0.75rem; color:{T.TEXT_3}; margin-left:8px;">{dims}</span>' if dims else ""
+            with st.container():
+                c_img, c_info = st.columns([1, 4], gap="medium")
+                with c_img:
+                    st.image(
+                        Image.open(io.BytesIO(item["bytes"])).convert("RGB"),
+                        width="stretch",
+                    )
+                with c_info:
+                    st.markdown(
+                        f'<div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">'
+                        f'<div>'
+                        f'<span style="font-weight:700; font-size:1.02rem; color:{T.TEXT};">{clean_text(item["name"])}</span>'
+                        f'{dim_badge}'
+                        f'</div>'
+                        f'<span style="padding:4px 10px; border-radius:6px; font-weight:700; font-size:0.82rem; '
+                        f'background:{badge_bg}; color:{badge_color}; border:1px solid {badge_color};">'
+                        f'{pred} ({result["confidence"]:.1f}%)</span>'
+                        f'</div>'
+                        f'<div style="font-size:0.8rem; color:{T.TEXT_2}; margin-top:4px; margin-bottom:8px;">'
+                        f'P(fake): <b>{result["probabilities"]["FAKE"]:.1f}%</b> · '
+                        f'P(real): <b>{result["probabilities"]["REAL"]:.1f}%</b> · '
+                        f'Basis: <b>{clean_text(str(result.get("consensus_basis", "Neural model")))}</b>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    with st.expander("🔬 View full forensic analysis & details", expanded=False):
+                        render_result_summary(item, result, settings)
+                        render_evidence(item["bytes"], result, heatmap)
+                st.markdown("<hr style='margin:16px 0; border-color:rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
         return
 
     item, result, heatmap = scored[0]

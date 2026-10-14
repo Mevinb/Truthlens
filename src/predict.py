@@ -530,8 +530,14 @@ def detect_likely_generator(img: np.ndarray, provenance: Optional[Dict[str, Any]
             provider = attr.get("provider", "")
             model_name = attr.get("model_name", "")
             if provider == "Google Gemini":
+                if "imagen 2" in model_name.lower():
+                    return "Google Gemini (Imagen 2)"
                 return "Google Gemini (Imagen 3)"
             elif provider == "OpenAI ChatGPT":
+                if "gpt-image-2" in model_name.lower():
+                    return "ChatGPT (GPT-Image-2)"
+                elif "gpt-image-1" in model_name.lower():
+                    return "ChatGPT (GPT-Image-1)"
                 return "ChatGPT (DALL-E 3)"
             elif provider in ("Midjourney", "Stable Diffusion", "Adobe Firefly"):
                 return provider
@@ -1205,7 +1211,9 @@ def predict_image(
     elif model_type in ("swin", "swin_hardstyles", "swin_ep9", "swin_improved_ep9", "swin_improved_ep7", "swin_improved_ep6", "swin_improved_ep8", "swin_improved_ep5", "swin_improved_ep3", "swin_improved_ep4", "swin_improved_ep2", "swin_newdata", "swin_newdata_ep3", "swin_newdata_ep4", "swin_newdata_ep2", "swin_newdata_ep1"):
         # SwinV2 is a CNN but has no layer3/layer4 hooks, so Grad-CAM is not
         # wired up for it — the verdict is produced by predict() alone.
-        result = _get_predictor(model_type, cfg).predict(model_source, natural_mode=True)
+        # Uses calibrated thresholding (self.threshold = 0.90) to avoid false alarms
+        # on real web images and screenshots.
+        result = _get_predictor(model_type, cfg).predict(model_source, natural_mode=False)
     else:
         result = _get_predictor(model_type, cfg).predict(model_source)
         result.update(forensic_metrics(model_source))
@@ -1229,10 +1237,20 @@ def predict_image(
         result["consensus_verdict"] = "FAKE"
         result["consensus_confidence"] = max(result["confidence"], float(attr.get("confidence", 0.99) * 100.0))
         result["consensus_basis"] = f"Verified {attr.get('provider', 'AI')} provenance ({attr.get('watermark_type', 'watermark')})"
+        original_prediction = result.get("prediction")
+        result["prediction"] = "FAKE"
+        result["confidence"] = result["consensus_confidence"]
+        if "probabilities" in result and isinstance(result["probabilities"], dict):
+            current_fake = float(result["probabilities"].get("FAKE", 0.0))
+            result["probabilities"]["FAKE"] = max(current_fake, result["confidence"])
+            result["probabilities"]["REAL"] = round(max(0.0, 100.0 - result["probabilities"]["FAKE"]), 2)
+        result["emoji"] = "🤖"
+        result["provenance_overridden"] = (original_prediction != "FAKE")
     else:
         result["consensus_verdict"] = result["prediction"]
         result["consensus_confidence"] = result["confidence"]
         result["consensus_basis"] = f"Neural model ({result.get('model_type', model_type)})"
+        result["provenance_overridden"] = False
 
     result["explanation"] = generate_explanation(result, img_np)
 
