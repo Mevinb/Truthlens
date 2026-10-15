@@ -11,13 +11,15 @@ import os
 import pickle
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    import torch
 
 import matplotlib
 matplotlib.use("Agg")  # headless backend
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     classification_report,
@@ -152,7 +154,7 @@ def set_cnn_checkpoint(cfg: "Config", value: str) -> "Config":
     are all things a person reasonably types. Every consumer then joins
     ``models_dir / cnn_model_name``, so a value that already carries its
     directory becomes ``models/models/resnet18_modern.pth``. That path does not
-    exist, but nothing checks until a loader is asked for it — in ``diag_eval_all``
+    exist, but nothing checks until a loader is asked for it — in ``tools/diag_eval_all``
     it surfaced as ``nothing scored``, which reads as an empty dataset rather
     than a mistyped flag. Normalise once, here, and fail loudly if the file is
     genuinely absent.

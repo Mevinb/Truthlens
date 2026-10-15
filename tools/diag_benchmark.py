@@ -21,6 +21,10 @@ from sklearn.metrics import f1_score, roc_auc_score
 
 warnings.filterwarnings("ignore")
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from src.predict import ClassicalPredictor, CNNPredictor
 from src.utils import Config
 

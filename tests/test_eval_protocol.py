@@ -15,7 +15,7 @@ import pytest
 # Regression: --checkpoint was assigned straight to cfg.cnn_model_name, which
 # every consumer joins onto models_dir. Passing the natural
 # "models/resnet18_modern.pth" produced "models/models/resnet18_modern.pth" and
-# diag_eval_all reported "nothing scored" — indistinguishable from an empty
+# tools/diag_eval_all reported "nothing scored" — indistinguishable from an empty
 # dataset. All three spellings must land on the same file.
 @pytest.mark.parametrize("spelling", ["bare", "repo_relative", "absolute"])
 def test_set_cnn_checkpoint_accepts_every_spelling(spelling):

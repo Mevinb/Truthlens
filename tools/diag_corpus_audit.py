@@ -39,8 +39,8 @@ corpus level rather than papering over with augmentation.
 
 Usage
 -----
-    python diag_corpus_audit.py datasets/prepared/modern_v2 datasets/prepared/multires
-    python diag_corpus_audit.py datasets/prepared/modern_v2 --split test
+    python tools/diag_corpus_audit.py datasets/prepared/modern_v2 datasets/prepared/multires
+    python tools/diag_corpus_audit.py datasets/prepared/modern_v2 --split test
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[1]
 EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
 # A bin has to hold at least this share of the corpus before a skew in it is

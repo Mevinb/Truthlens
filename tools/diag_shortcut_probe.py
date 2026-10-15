@@ -2,12 +2,12 @@
 """
 TruthLens — Post-Transform Shortcut Probe
 ==========================================
-Answers a question ``diag_corpus_audit.py`` cannot: of the confounds present in
+Answers a question ``tools/diag_corpus_audit.py`` cannot: of the confounds present in
 the corpus *files*, which ones still reach the model after augmentation?
 
 Why the file audit is not enough
 --------------------------------
-``diag_corpus_audit.py`` reads width, height and container format off disk. It
+``tools/diag_corpus_audit.py`` reads width, height and container format off disk. It
 found the corpus's worst leak that way — 768-1400px short side ran 0.82 fake,
 1-2MP ran 0.99 fake, because every modern generator emits 1024px+ while the
 Flickr photo sets are capped near 768. But a property of a *file* is only a
@@ -41,14 +41,14 @@ two numbers is what that change bought, measured rather than argued.
 
 This is a diagnostic, not a gate. A probe accuracy of 60% does not mean the CNN
 will score 60%; it means 60% is available for free. Read it next to
-``diag_eval_all.py``'s ``internet`` and ``holdout`` rows, which measure whether
+``tools/diag_eval_all.py``'s ``internet`` and ``holdout`` rows, which measure whether
 the model took the free option.
 
 Usage
 -----
-    python diag_shortcut_probe.py datasets/prepared/modern_v2 datasets/prepared/multires
-    python diag_shortcut_probe.py datasets/prepared/modern_v2 --compare-legacy
-    python diag_shortcut_probe.py datasets/prepared/modern_v2 --per-class 500 --views 3
+    python tools/diag_shortcut_probe.py datasets/prepared/modern_v2 datasets/prepared/multires
+    python tools/diag_shortcut_probe.py datasets/prepared/modern_v2 --compare-legacy
+    python tools/diag_shortcut_probe.py datasets/prepared/modern_v2 --per-class 500 --views 3
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT_DIR / "results" / "metrics"
 EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 

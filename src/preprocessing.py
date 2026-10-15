@@ -9,7 +9,6 @@ Dataset classes, transforms, and feature extraction for both:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
@@ -21,6 +20,7 @@ from skimage.feature import hog, local_binary_pattern
 from src.utils import Config, get_logger
 
 if TYPE_CHECKING:
+    import torch
     from torch.utils.data import DataLoader, Dataset
     from torchvision import transforms as T
 
@@ -374,7 +374,7 @@ def get_transforms(split: str, img_size: int = 224, modern: bool = False):
             # fall back to the plain resize.
             #
             # This is one view; the served path averages several. Headline
-            # numbers come from src/evaluate.py and diag_modern_baseline.py,
+            # numbers come from src/evaluate.py and tools/diag_modern_baseline.py,
             # which both go through predict_image and therefore through the
             # real TTA ensemble.
             #
@@ -384,7 +384,7 @@ def get_transforms(split: str, img_size: int = 224, modern: bool = False):
             # format reaches the model: datasets/prepared/modern_v2 stores original bytes,
             # so pristine PNG occurs almost exclusively in the fake class, and
             # early stopping would select whichever checkpoint best detects the
-            # absence of 8x8 blocking. Measured with diag_shortcut_probe.py: ten
+            # absence of 8x8 blocking. Measured with tools/diag_shortcut_probe.py: ten
             # low-level statistics and a linear model separate the val classes at
             # 0.613 balanced accuracy with no recompress, against 0.537 on the
             # train pipeline that has it. Anything available to a linear probe on

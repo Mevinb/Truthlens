@@ -86,7 +86,7 @@ def forensic_metrics(image_source) -> Dict[str, Any]:
     verdict. Measured on the held-out test split their discriminative power is
     close to chance (FFT AUC 0.562, ELA AUC 0.514, chance = 0.500), and mixing
     them into the CNN score lowers AUC monotonically: 0.9814 alone, 0.9782 at
-    10% forensic weight, 0.9730 at 25%, 0.9640 at 45%. See diag_forensics.py.
+    10% forensic weight, 0.9730 at 25%, 0.9640 at 45%. See tools/diag_forensics.py.
     """
     pil = _as_pil(image_source)
     if pil is None:
@@ -195,7 +195,7 @@ class CNNPredictor:
         Whole-frame views: plain 224 resize, horizontal flip, and five 224 crops
         of a 256 resize. That set was selected on the validation split (AUC
         0.9819 vs 0.9798 single-view) and confirmed on held-out test (AUC 0.9814,
-        93.0% accuracy). See diag_strategy.py.
+        93.0% accuracy). See tools/diag_strategy.py.
 
         Native-scale views: for any image whose short side comfortably exceeds
         224, a grid of 224 crops taken at 1:1 pixel scale is appended. Those
@@ -716,7 +716,7 @@ class EnsemblePredictor:
     Forest 0.546, FFT 0.562, ELA 0.514 — while the CNN reaches 0.981. The previous
     weighted blend (CNN 35% / FFT 25% / ELA 20% / SVM 10% / RF 10%) cost 10.5
     points of accuracy overall and 68 points on high-resolution real photographs.
-    See diag_forensics.py and diag_strategy.py.
+    See tools/diag_forensics.py and tools/diag_strategy.py.
     """
 
     ADVISORY_CLASSICAL = ("svm", "random_forest")

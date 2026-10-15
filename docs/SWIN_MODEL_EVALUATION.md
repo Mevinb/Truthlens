@@ -17,7 +17,7 @@ This is the audit record for every Swin checkpoint currently present under
 Run:
 
 ```bash
-.venv/bin/python diag_swin_checkpoint_audit.py
+.venv/bin/python tools/diag_swin_checkpoint_audit.py
 MPLCONFIGDIR=/tmp/truthlens-mpl .venv/bin/python -m pytest \
   tests/test_swin_manifest.py tests/test_verify_swin_dataset.py \
   tests/test_swin_train_eval.py tests/test_predict.py -q

@@ -259,7 +259,7 @@ python -m venv .venv && source .venv/bin/activate && pip install -r requirements
   --tag improved_ep9 --splits test holdout
 
 # audit + tests + app
-.venv/bin/python diag_swin_checkpoint_audit.py
+.venv/bin/python tools/diag_swin_checkpoint_audit.py
 pytest tests/ -v
 streamlit run app/app.py   # or ./run.sh
 ```
@@ -291,8 +291,8 @@ Legacy paths (ResNet/CLIP/classical/notebooks/alt-frontends) exist in repo but a
 ## 10. Tests, Audits & Artifacts
 
 - `pytest tests/ -v` — Swin manifest / verify / train-eval / predict regression (72/72 in audit).
-- `diag_swin_checkpoint_audit.py` — 22/22 strict-load + 512px forward; 18 unique weight states (4 alias pairs + 2 resume snapshots excluded from serving).
-- `diag_app_paths.py` — app smoke test.
+- `tools/diag_swin_checkpoint_audit.py` — 22/22 strict-load + 512px forward; 18 unique weight states (4 alias pairs + 2 resume snapshots excluded from serving).
+- `tools/diag_app_paths.py` — app smoke test.
 - Artifacts: per-epoch archives + index, `improved_swin_benchmark.json` (§6.2), `swin_dataset_verification.json` (§5.1), per-image `scores/*.jsonl`, teed training logs.
 
 ---

@@ -32,7 +32,7 @@ from pathlib import Path
 import pandas as pd
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.utils import Config, resolve_cnn_checkpoint   # noqa: E402
 from src.predict import predict_image                   # noqa: E402

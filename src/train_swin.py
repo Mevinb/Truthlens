@@ -726,8 +726,6 @@ def train(args) -> int:
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
-    steps_per_epoch = len(train_ds) // args.batch_size // args.grad_accum
-    total_steps = steps_per_epoch * args.epochs
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
     )
@@ -872,7 +870,7 @@ def train(args) -> int:
             args.grad_accum,
             start_step=start_step,
             snapshot_every=args.resume_every,
-            snapshot_cb=lambda completed: _save_step_state(epoch, completed),
+            snapshot_cb=lambda completed, epoch=epoch: _save_step_state(epoch, completed),
             progress_every=args.progress_every,
             target_fpr=args.target_fpr,
         )

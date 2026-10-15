@@ -8,7 +8,7 @@ number.
 
 Why per-generator and not one accuracy
 --------------------------------------
-``diag_benchmark.py`` reports accuracy on ``datasets/prepared/multires/test``, whose fake
+``tools/diag_benchmark.py`` reports accuracy on ``datasets/prepared/multires/test``, whose fake
 class is CIFAKE + older SD/GAN + DALL-E 3. A model can score 92.8% there and
 still be at chance on GPT-Image-2, because that generator is absent from both
 the train and test halves of that corpus — the test split cannot detect a gap
@@ -22,9 +22,9 @@ through as REAL. That is the failure being measured.
 
 Usage
 -----
-    python diag_modern_baseline.py                       # all splits
-    python diag_modern_baseline.py --split holdout       # the clean eval sets
-    python diag_modern_baseline.py --limit 150 --model resnet18
+    python tools/diag_modern_baseline.py                       # all splits
+    python tools/diag_modern_baseline.py --split holdout       # the clean eval sets
+    python tools/diag_modern_baseline.py --limit 150 --model resnet18
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[1]
 CORPUS_DIR = ROOT_DIR / "datasets" / "prepared" / "modern_v2"
 MANIFEST = CORPUS_DIR / "manifest.jsonl"
 OUT_PATH = ROOT_DIR / "results" / "metrics" / "modern_generator_baseline.json"

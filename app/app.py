@@ -7,7 +7,7 @@ Streamlit frontend for AI-generated image detection.
 This file is layout only. The model layer lives in ``app/inference.py`` and the
 design system in ``app/theme.py``. Everything on screen goes through
 ``src.predict.predict_image``, so what the app reports is exactly what
-``src/evaluate.py`` and ``diag_benchmark.py`` measure.
+``src/evaluate.py`` and ``tools/diag_benchmark.py`` measure.
 
 Run:
     streamlit run app/app.py
@@ -219,7 +219,7 @@ def render_sidebar() -> Dict[str, Any]:
         st.markdown("<hr>", unsafe_allow_html=True)
 
         # Measured scores read from results/metrics/benchmark_test_split.json —
-        # not hardcoded, so re-running diag_benchmark.py updates the whole UI and
+        # not hardcoded, so re-running tools/diag_benchmark.py updates the whole UI and
         # the displayed figures cannot drift from what was measured.
         m = model_scores(model_type)
         st.markdown(T.eyebrow("measured on held-out test"), unsafe_allow_html=True)
@@ -255,7 +255,7 @@ def render_sidebar() -> Dict[str, Any]:
         else:
             st.markdown(
                 T.note(
-                    "No benchmark on disk. Run <code>python diag_benchmark.py</code> to "
+                    "No benchmark on disk. Run <code>python tools/diag_benchmark.py</code> to "
                     "populate the measured scores.",
                 ),
                 unsafe_allow_html=True,
@@ -580,7 +580,7 @@ def render_evidence(item: Dict[str, Any], result: Dict[str, Any],
 
     The forensic panels are descriptive. Measured alone they reach AUC 0.562
     (FFT) and 0.514 (ELA) against a 0.500 chance line, and blending either into
-    the CNN score lowers AUC monotonically — see diag_forensics.py. The previous
+    the CNN score lowers AUC monotonically — see tools/diag_forensics.py. The previous
     version of this screen announced "high-frequency VAE grid signature
     detected!" above hf_ratio 0.72 and printed an "% AI probability" for both
     signals. Real photographs in this corpus average hf_ratio 0.7197, i.e. that
@@ -1011,7 +1011,7 @@ def render_benchmarks() -> None:
     if not rows:
         st.markdown(
             T.note(
-                "No benchmark file found. Run <code>python diag_benchmark.py</code> — it "
+                "No benchmark file found. Run <code>python tools/diag_benchmark.py</code> — it "
                 "writes <code>results/metrics/benchmark_test_split.json</code>, which "
                 "both this page and the sidebar read."
             ),
@@ -1023,7 +1023,7 @@ def render_benchmarks() -> None:
     st.markdown(
         '<div class="tl-card"><h4>Measured performance</h4>'
         f"<p>Every shipped model, scored on <code>{split}</code> by "
-        "<code>diag_benchmark.py</code>. The CNN is scored on all 2,620 test images; "
+        "<code>tools/diag_benchmark.py</code>. The CNN is scored on all 2,620 test images; "
         "the classical models on a 600-image stratified subsample, because HOG+LBP "
         "extraction is the bottleneck. Nothing here is hardcoded — the page reads the "
         "benchmark file, so it cannot drift from what was measured.</p></div>",
@@ -1222,6 +1222,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     # Streamlit execs this file with __name__ == "__main__", so the page renders
-    # under `streamlit run` but importers (tests, diag_app_paths.py) get the
+    # under `streamlit run` but importers (tests, tools/diag_app_paths.py) get the
     # helpers without a rendered page or a ScriptRunContext warning.
     main()

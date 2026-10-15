@@ -93,10 +93,10 @@ TruthLens/
 │   ├── 03_CNN_Training.py
 │   └── 04_GradCAM_Demo.py
 │
-├── diag_benchmark.py            ← Benchmarks every model + per-resolution tiers
-├── diag_swin_checkpoint_audit.py ← Strict-load and inference audit of all Swin files
-├── diag_forensics.py            ← Measures FFT/ELA signal strength alone
-├── diag_app_paths.py            ← Smoke-tests all 8 models × 2 images
+├── tools/diag_benchmark.py            ← Benchmarks every model + per-resolution tiers
+├── tools/diag_swin_checkpoint_audit.py ← Strict-load and inference audit of all Swin files
+├── tools/diag_forensics.py            ← Measures FFT/ELA signal strength alone
+├── tools/diag_app_paths.py            ← Smoke-tests all 8 models × 2 images
 ├── models/                      ← Saved model checkpoints (.pth / .pkl)
 ├── results/                     ← Plots, metrics, Grad-CAM outputs
 └── tests/                       ← pytest unit tests
@@ -542,12 +542,12 @@ The same-source number is a regression check, not a promise for arbitrary web
 uploads. See `RETRAIN_PLAN.md` and `src/eval_protocol.py` for the independent
 source, unseen-generator, and wild-web tiers.
 
-Measured on the held-out `datasets/prepared/multires/test` split by `diag_benchmark.py`.
+Measured on the held-out `datasets/prepared/multires/test` split by `tools/diag_benchmark.py`.
 The CNN is scored on all 2,620 test images; the classical models on a 600-image
 stratified subsample (HOG+LBP extraction is the bottleneck). Reproduce with:
 
 ```bash
-python diag_benchmark.py          # writes results/metrics/benchmark_test_split.json
+python tools/diag_benchmark.py          # writes results/metrics/benchmark_test_split.json
 
 # src/evaluate.py defaults to --data-dir datasets/prepared/cifake (the 32px CIFAKE split), so
 # point it at the corpus the shipped checkpoint was actually trained on:
@@ -573,7 +573,7 @@ python src/evaluate.py --model all --data-dir datasets/prepared/multires
 > verdict; the FFT and ELA
 > panels in the app are descriptive and never alter it (measured alone they reach
 > AUC 0.562 and 0.514, and blending them into the CNN score lowers AUC
-> monotonically — see `diag_forensics.py`).
+> monotonically — see `tools/diag_forensics.py`).
 
 > Earlier revisions of this table quoted CIFAKE-era figures (ResNet18 ~95%,
 > Random Forest ~78%, SVM ~76%). Those never held on `datasets/prepared/multires`.
@@ -595,7 +595,7 @@ the historical baseline and improved leaderboards are not directly comparable.
 Reproduce the compatibility audit with:
 
 ```bash
-.venv/bin/python diag_swin_checkpoint_audit.py
+.venv/bin/python tools/diag_swin_checkpoint_audit.py
 ```
 
 ### Accuracy by resolution tier
@@ -615,7 +615,7 @@ almost always in the high-resolution tier, which scores **4.3 points below the
 headline** and misses **14% of AI images**. The app detects the uploaded image's
 tier from its pixel dimensions and quotes that tier's accuracy on the result
 page instead of the aggregate. Reproduced by `score_by_tier()` in
-`diag_benchmark.py`; the numbers land in the `by_resolution` block of
+`tools/diag_benchmark.py`; the numbers land in the `by_resolution` block of
 `results/metrics/benchmark_test_split.json`, which is what the UI reads.
 
 ---

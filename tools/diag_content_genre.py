@@ -129,7 +129,7 @@ def main() -> None:
     predict_image = cfg = None
     if args.score:
         import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from src.utils import Config, resolve_cnn_checkpoint
         from src.predict import predict_image as _pi
         predict_image = _pi

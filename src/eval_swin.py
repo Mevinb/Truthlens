@@ -7,7 +7,7 @@ splits, with the metrics the retrain plan actually needs:
 
 * overall accuracy / precision / recall / F1 / ROC-AUC / balanced accuracy,
 * the same numbers broken out **by source** and **by generator** (per-class,
-  like ``diag_eval_all``) so a detector that memorised one generator's visual
+  like ``tools/diag_eval_all``) so a detector that memorised one generator's visual
   quirks shows up instead of hiding in the aggregate.
 
 Splits are scored exactly as the manifest declares them — ``test`` is the

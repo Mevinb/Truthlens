@@ -9,7 +9,7 @@ training-resume snapshots cannot be mistaken for independent models.
 
 Run with:
 
-    .venv/bin/python diag_swin_checkpoint_audit.py
+    .venv/bin/python tools/diag_swin_checkpoint_audit.py
 
 The JSON report is written to ``results/metrics/swin_checkpoint_audit.json``.
 """
@@ -26,7 +26,7 @@ from typing import Any
 
 import torch
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

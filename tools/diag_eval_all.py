@@ -33,9 +33,9 @@ so these numbers describe the product rather than a bare forward pass.
 
 Usage
 -----
-    python diag_eval_all.py                      # every set, 150 imgs per group
-    python diag_eval_all.py --sets internet holdout
-    python diag_eval_all.py --limit 300 --tag after-retrain
+    python tools/diag_eval_all.py                      # every set, 150 imgs per group
+    python tools/diag_eval_all.py --sets internet holdout
+    python tools/diag_eval_all.py --limit 300 --tag after-retrain
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT_DIR / "results" / "metrics"
 
 EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")

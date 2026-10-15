@@ -13,7 +13,7 @@ The SwinV2 training runs feed on the *union* of the prepared corpora
 (including ``corpus``, ``modern_v2``, ``legacy_archive``, ``gpt_nano``, and the
 new Grok/Aurora set). Each corpus is internally split, but the
 union is what the model actually trains on, so the union is what has to be
-checked for leakage — the exact failure mode ``diag_corpus_audit.py`` describes
+checked for leakage — the exact failure mode ``tools/diag_corpus_audit.py`` describes
 for format/resolution, applied here to content identity.
 
 The output ``sha256`` always describes the bytes that training opens. Source

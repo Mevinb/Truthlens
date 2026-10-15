@@ -9,7 +9,7 @@ The single rule enforced here: all inference goes through
 ``src.predict.predict_image``. The app used to re-implement preprocessing and
 softmax itself, which is how it ended up serving results whose numbers did not
 match anything the project measured. There is now one path, so
-``src/evaluate.py`` and ``diag_benchmark.py`` describe what the app actually
+``src/evaluate.py`` and ``tools/diag_benchmark.py`` describe what the app actually
 returns.
 """
 
@@ -98,7 +98,7 @@ MODEL_BLURB: Dict[str, str] = {
     "naive_bayes":         "Gaussian naive Bayes on raw HOG + LBP features.",
 }
 
-# Measured AUC of each forensic signal on its own, from diag_forensics.py.
+# Measured AUC of each forensic signal on its own, from tools/diag_forensics.py.
 # Both sit near the 0.500 chance line, which is why neither is allowed to move
 # the verdict and why the panels that show them are labelled descriptive.
 FORENSIC_AUC = {"fft": 0.562, "ela": 0.514}
@@ -191,14 +191,14 @@ def benchmark() -> Dict[str, Any]:
     """Load results/metrics/benchmark_test_split.json.
 
     Read from disk rather than hardcoded in the UI, so re-running
-    ``python diag_benchmark.py`` updates every number the app displays and the
+    ``python tools/diag_benchmark.py`` updates every number the app displays and the
     two can never disagree. Returns ``{}`` when the file is absent.
     """
     path = PROJECT_ROOT / "results" / "metrics" / "benchmark_test_split.json"
     try:
         return json.loads(path.read_text())
     except FileNotFoundError:
-        logger.warning("No benchmark file at %s — run diag_benchmark.py", path)
+        logger.warning("No benchmark file at %s — run tools/diag_benchmark.py", path)
         return {}
     except Exception as exc:                                  # noqa: BLE001
         logger.warning("Could not read benchmark file: %s", exc)

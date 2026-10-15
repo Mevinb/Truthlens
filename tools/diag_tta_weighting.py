@@ -50,10 +50,10 @@ Reading the output
 
 Usage
 -----
-    python diag_tta_weighting.py --split holdout
-    python diag_tta_weighting.py --split test --limit 150
-    python diag_tta_weighting.py --internet
-    python diag_tta_weighting.py --split holdout --checkpoint resnet18_modern.pth
+    python tools/diag_tta_weighting.py --split holdout
+    python tools/diag_tta_weighting.py --split test --limit 150
+    python tools/diag_tta_weighting.py --internet
+    python tools/diag_tta_weighting.py --split holdout --checkpoint resnet18_modern.pth
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ import numpy as np
 
 warnings.filterwarnings("ignore")
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[1]
 MODERN_MANIFEST = ROOT_DIR / "datasets" / "prepared" / "modern_v2" / "manifest.jsonl"
 INTERNET_MANIFEST = ROOT_DIR / "datasets" / "evaluation" / "internet" / "manifest.jsonl"
 OUT_DIR = ROOT_DIR / "results" / "metrics"

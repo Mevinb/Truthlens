@@ -171,7 +171,7 @@ Nothing downstream is trustworthy until measurement is. `src/eval_protocol.py`.
   three decimals it cannot support.
 - **Per-image scores are cached** to `results/metrics/scores/<tag>.jsonl`, so Phase 2's
   calibration, fusion weights and threshold search all reuse one expensive pass.
-- **Fixed** the `--checkpoint` double-join in `diag_eval_all.py` — `models/foo.pth`
+- **Fixed** the `--checkpoint` double-join in `tools/diag_eval_all.py` — `models/foo.pth`
   became `models/models/foo.pth` and surfaced as "nothing scored", which reads as an
   empty dataset rather than a mistyped flag. Now resolves a bare filename, a
   repo-relative path or an absolute path, and raises with the available checkpoints
@@ -249,7 +249,7 @@ already flags as too coarse to report.
   carries Seedream 3.0, a different version — quarantined, so it does not paper over this.
 - Keep the content-hash split (leak-safe *within* a source) and keep caption-paired sets in eval
   only.
-- **Gate:** `diag_corpus_audit.py` must show `leak: false` on every panel before training. It
+- **Gate:** `tools/diag_corpus_audit.py` must show `leak: false` on every panel before training. It
   currently fails three — PNG 100 % fake, 1–2 MP 98.5 % fake, portrait 73 % fake.
 
 #### Collector changes this required
@@ -328,7 +328,7 @@ fine-tuned one, the variable is pretraining and freezing, not parameter count.
     --reuse-scores --threshold-from T4_wild      # instant re-report, off-tier threshold
 
 # 1. corpus is clean — every panel leak:false
-.venv/bin/python diag_corpus_audit.py
+.venv/bin/python tools/diag_corpus_audit.py
 
 # 2. features + head
 .venv/bin/python src/features_clip.py --corpus datasets/prepared/modern_v2 --views frame,native
@@ -341,7 +341,7 @@ fine-tuned one, the variable is pretraining and freezing, not parameter count.
 .venv/bin/python src/eval_protocol.py --bakeoff
 
 # 5. app paths + unit tests
-.venv/bin/python diag_app_paths.py && .venv/bin/python -m pytest
+.venv/bin/python tools/diag_app_paths.py && .venv/bin/python -m pytest
 ```
 
 **Acceptance targets.** Baselines are the served numbers from section 0, so these are

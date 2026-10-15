@@ -5,7 +5,7 @@ TruthLens — Web Test Set Builder (non-Wikimedia)
 Downloads real photographs and AI-generated images from the open web into
 ``datasets/evaluation/internet/``, alongside whatever ``build_internet_testset.py`` managed
 to collect from Wikimedia Commons. Same output directory and same manifest
-schema, so ``diag_eval_all.py`` picks both up as one ``internet`` set and groups
+schema, so ``tools/diag_eval_all.py`` picks both up as one ``internet`` set and groups
 results by the ``tag`` field.
 
 Why this exists next to the Commons builder

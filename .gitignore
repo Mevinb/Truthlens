@@ -130,6 +130,7 @@ results/logs/*
 !results/.gitkeep
 runs/
 *.log
+*.pdf
 
 # Features cache (large numpy, derived from datasets)
 features/**/*.npy

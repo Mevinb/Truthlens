@@ -1,2 +1,0 @@
-"""TruthLens redesigned Streamlit frontend."""
-
